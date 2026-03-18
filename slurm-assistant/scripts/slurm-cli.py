@@ -1,45 +1,25 @@
 #!/usr/bin/env python3
 """
 Slurm Cluster Assistant CLI
-统一命令接口，支持本地（集群上）和远程（集群外）两种模式
+跨平台支持：Windows/macOS/Linux
 """
 
 import argparse
 import json
 import os
+import platform
+import re
+import shutil
 import subprocess
 import sys
-import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional, Tuple
 
-# 全局配置路径
+# 全局配置路径（固定全局安装）
 SKILL_DIR = Path.home() / ".claude" / "skills" / "slurm-assistant"
 CONFIG_FILE = SKILL_DIR / "config.json"
 JOBS_FILE = SKILL_DIR / "jobs.json"
-PARTITION_CACHE_FILE = SKILL_DIR / "partition_cache.json"
-
-
-def _detect_project_root() -> Optional[Path]:
-    """检测项目根目录（查找 .git 或 .claude 目录）"""
-    current = Path.cwd()
-    for parent in [current] + list(current.parents):
-        if (parent / ".git").exists() or (parent / ".claude").exists():
-            return parent
-        if parent == Path.home():
-            break
-    return None
-
-
-def _get_project_skill_dir() -> Optional[Path]:
-    """获取项目级别的 skill 目录"""
-    project_root = _detect_project_root()
-    if project_root:
-        skill_dir = project_root / ".claude" / "skills" / "slurm-assistant"
-        if skill_dir.exists():
-            return skill_dir
-    return None
 
 
 class Colors:
@@ -48,1562 +28,1070 @@ class Colors:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     BLUE = '\033[94m'
-    BOLD = '\033[1m'
     RESET = '\033[0m'
+
+    @classmethod
+    def disable(cls):
+        """禁用颜色（Windows 兼容）"""
+        cls.RED = cls.GREEN = cls.YELLOW = cls.BLUE = cls.RESET = ''
+
+
+# Windows 下禁用颜色
+if platform.system() == "Windows":
+    Colors.disable()
 
 
 def print_info(msg: str):
-    print(f"{Colors.BLUE}ℹ{Colors.RESET} {msg}")
+    print(f"{Colors.BLUE}[INFO]{Colors.RESET} {msg}")
 
 
 def print_success(msg: str):
-    print(f"{Colors.GREEN}✓{Colors.RESET} {msg}")
+    print(f"{Colors.GREEN}[OK]{Colors.RESET} {msg}")
 
 
 def print_warning(msg: str):
-    print(f"{Colors.YELLOW}⚠{Colors.RESET} {msg}")
+    print(f"{Colors.YELLOW}[WARN]{Colors.RESET} {msg}")
 
 
 def print_error(msg: str):
-    print(f"{Colors.RED}✗{Colors.RESET} {msg}", file=sys.stderr)
+    print(f"{Colors.RED}[ERROR]{Colors.RESET} {msg}", file=sys.stderr)
 
 
-def confirm(prompt: str, default: bool = False) -> bool:
-    """确认操作"""
-    suffix = " [Y/n]" if default else " [y/N]"
-    response = input(f"{prompt}{suffix}: ").strip().lower()
-    if not response:
-        return default
-    return response in ('y', 'yes', '是')
+def die(msg: str):
+    print_error(msg)
+    sys.exit(1)
 
 
 class ConfigManager:
-    """配置管理器（支持项目级别和全局级别配置）"""
+    """配置管理器"""
 
-    DEFAULT_CONFIG = {
-        "mode": None,  # "local" or "remote"
-        "cluster": {
-            "name": "",
-            "host": "",
-            "port": 22,
-            "username": "",
-            "jump_host": None
-        },
-        "ssh": {
-            "key_path": str(Path.home() / ".ssh" / "id_rsa"),
-            "config_entry": ""
-        },
-        "defaults": {
-            "partition": None,
-            "keep_alive_duration": "24h"
-        },
-        "paths": {
-            "home_on_cluster": "",
-            "scratch_dir": ""
-        }
-    }
+    def __init__(self):
+        self.config: Dict[str, Any] = {}
+        self._load()
 
-    def __init__(self, project_root: Optional[str] = None):
-        """初始化配置管理器
+    def _load(self):
+        """加载配置"""
+        if CONFIG_FILE.exists():
+            try:
+                self.config = json.loads(CONFIG_FILE.read_text())
+            except json.JSONDecodeError:
+                self.config = {}
 
-        Args:
-            project_root: 项目根目录（可选，自动检测）
-        """
-        self.project_root = Path(project_root) if project_root else _detect_project_root()
-        self.project_skill_dir = (
-            self.project_root / ".claude" / "skills" / "slurm-assistant"
-            if self.project_root else None
-        )
-        # 确保配置目录存在
+    def save(self):
+        """保存配置"""
         SKILL_DIR.mkdir(parents=True, exist_ok=True)
-        if self.project_skill_dir:
-            self.project_skill_dir.mkdir(parents=True, exist_ok=True)
-
-    def _load_global(self) -> Dict[str, Any]:
-        """加载全局配置"""
-        if CONFIG_FILE.exists():
-            try:
-                with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    def _load_project(self) -> Dict[str, Any]:
-        """加载项目级别配置"""
-        if not self.project_skill_dir:
-            return {}
-        config_file = self.project_skill_dir / "config.json"
-        if config_file.exists():
-            try:
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    def _deep_merge(self, base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
-        """深度合并两个配置字典"""
-        result = base.copy()
-        for key, value in override.items():
-            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-                result[key] = self._deep_merge(result[key], value)
-            else:
-                result[key] = value
-        return result
-
-    def load(self) -> Dict[str, Any]:
-        """加载配置（合并项目级和全局级，项目配置优先）"""
-        global_config = self._load_global()
-        project_config = self._load_project()
-        # 以默认配置为基础，合并全局配置，再合并项目配置
-        result = self._deep_merge(self.DEFAULT_CONFIG.copy(), global_config)
-        result = self._deep_merge(result, project_config)
-        return result
-
-    def save(self, config: Dict[str, Any], to_project: bool = False):
-        """保存配置
-
-        Args:
-            config: 配置内容
-            to_project: 是否保存到项目级别（默认保存到全局）
-        """
-        if to_project and self.project_skill_dir:
-            config_path = self.project_skill_dir / "config.json"
-            with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            print_success(f"配置已保存到项目配置: {config_path}")
-        else:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
-            print_success(f"配置已保存到全局配置: {CONFIG_FILE}")
-
-    def get_config_sources(self) -> List[str]:
-        """获取配置来源列表"""
-        sources = []
-        if self.project_skill_dir and (self.project_skill_dir / "config.json").exists():
-            sources.append(f"项目配置: {self.project_skill_dir / 'config.json'}")
-        if CONFIG_FILE.exists():
-            sources.append(f"全局配置: {CONFIG_FILE}")
-        return sources
+        CONFIG_FILE.write_text(json.dumps(self.config, indent=2, ensure_ascii=False))
 
     def is_configured(self) -> bool:
-        """检查是否已配置（检查项目级或全局）"""
-        # 检查项目级别配置
-        if self.project_skill_dir and (self.project_skill_dir / "config.json").exists():
-            project_config = self._load_project()
-            if project_config.get("mode"):
-                return True
-        # 检查全局配置
-        return self._load_global().get("mode") is not None
+        return "mode" in self.config
 
+    def get_mode(self) -> str:
+        return self.config.get("mode", "local")
 
-class JobTracker:
-    """作业追踪器（支持项目级别和全局级别）"""
-
-    def __init__(self, project_root: Optional[str] = None):
-        """初始化作业追踪器
-
-        Args:
-            project_root: 项目根目录（可选，自动检测）
-        """
-        self.project_root = Path(project_root) if project_root else _detect_project_root()
-        self.project_skill_dir = (
-            self.project_root / ".claude" / "skills" / "slurm-assistant"
-            if self.project_root else None
-        )
-        # 确保配置目录存在
-        SKILL_DIR.mkdir(parents=True, exist_ok=True)
-        if self.project_skill_dir:
-            self.project_skill_dir.mkdir(parents=True, exist_ok=True)
-
-    def _get_jobs_file(self) -> Path:
-        """获取作业记录文件路径（优先项目级别）"""
-        if self.project_skill_dir and (self.project_skill_dir / "jobs.json").exists():
-            return self.project_skill_dir / "jobs.json"
-        return JOBS_FILE
-
-    def load(self) -> Dict[str, Any]:
-        """加载作业记录"""
-        jobs_file = self._get_jobs_file()
-        if jobs_file.exists():
-            try:
-                with open(jobs_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                return {"jobs": []}
-        return {"jobs": []}
-
-    def save(self, data: Dict[str, Any]):
-        """保存作业记录"""
-        jobs_file = self._get_jobs_file()
-        with open(jobs_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-    def add_job(self, job_id: str, name: str, script: str,
-                output_file: str, error_file: str = None):
-        """添加作业记录"""
-        data = self.load()
-        job = {
-            "job_id": job_id,
-            "name": name,
-            "script": script,
-            "submitted_at": datetime.now().isoformat(),
-            "status": "PENDING",
-            "output_file": output_file,
-            "error_file": error_file or output_file.replace(".out", ".err")
-        }
-        data["jobs"].append(job)
-        self.save(data)
-        print_info(f"作业已记录: {job_id}")
-
-    def update_status(self, job_id: str, status: str):
-        """更新作业状态"""
-        data = self.load()
-        for job in data["jobs"]:
-            if job["job_id"] == job_id:
-                job["status"] = status
-                job["updated_at"] = datetime.now().isoformat()
-                break
-        self.save(data)
-
-    def get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """获取作业记录"""
-        data = self.load()
-        for job in data["jobs"]:
-            if job["job_id"] == job_id:
-                return job
-        return None
-
-    def list_jobs(self, since: str = None) -> List[Dict[str, Any]]:
-        """列出作业"""
-        data = self.load()
-        jobs = data.get("jobs", [])
-        if since:
-            jobs = [j for j in jobs if j.get("submitted_at", "") >= since]
-        return jobs
-
-
-class PartitionCache:
-    """分区节点信息缓存（支持项目级别和全局级别）"""
-
-    def __init__(self, project_root: Optional[str] = None):
-        self.project_root = Path(project_root) if project_root else _detect_project_root()
-        self.project_skill_dir = (
-            self.project_root / ".claude" / "skills" / "slurm-assistant"
-            if self.project_root else None
-        )
-        # 确保配置目录存在
-        SKILL_DIR.mkdir(parents=True, exist_ok=True)
-        if self.project_skill_dir:
-            self.project_skill_dir.mkdir(parents=True, exist_ok=True)
-
-    def _get_cache_file(self) -> Path:
-        """获取缓存文件路径（优先项目级别）"""
-        if self.project_skill_dir and (self.project_skill_dir / "partition_cache.json").exists():
-            return self.project_skill_dir / "partition_cache.json"
-        return PARTITION_CACHE_FILE
-
-    def load(self) -> Dict[str, Any]:
-        """加载缓存"""
-        cache_file = self._get_cache_file()
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-        return {}
-
-    def save(self, data: Dict[str, Any]):
-        """保存缓存"""
-        cache_file = self._get_cache_file()
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-
-    def get_partitions(self, cluster_name: str) -> Optional[List[Dict[str, Any]]]:
-        """获取集群的分区列表"""
-        data = self.load()
-        return data.get(cluster_name, {}).get("partitions")
-
-    def set_partitions(self, cluster_name: str, partitions: List[Dict[str, Any]]):
-        """设置集群的分区列表"""
-        data = self.load()
-        if cluster_name not in data:
-            data[cluster_name] = {}
-        data[cluster_name]["partitions"] = partitions
-        data[cluster_name]["updated_at"] = datetime.now().isoformat()
-        self.save(data)
-
-    def get_nodes(self, cluster_name: str, partition: str) -> Optional[List[Dict[str, Any]]]:
-        """获取分区下的节点列表"""
-        data = self.load()
-        cluster_data = data.get(cluster_name, {})
-        partitions = cluster_data.get("partitions", [])
-        for p in partitions:
-            if p.get("name") == partition:
-                return p.get("nodes", [])
-        return None
-
-    def is_cache_valid(self, cluster_name: str, max_age_hours: int = 24) -> bool:
-        """检查缓存是否有效"""
-        data = self.load()
-        cluster_data = data.get(cluster_name)
-        if not cluster_data:
-            return False
-        updated_at = cluster_data.get("updated_at")
-        if not updated_at:
-            return False
-        try:
-            from datetime import timedelta
-            update_time = datetime.fromisoformat(updated_at)
-            age = datetime.now() - update_time
-            return age < timedelta(hours=max_age_hours)
-        except:
-            return False
+    def get_cluster_info(self) -> Dict[str, Any]:
+        return self.config.get("cluster", {})
 
 
 class SlurmExecutor:
-    """Slurm 命令执行器"""
+    """Slurm 执行器"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: ConfigManager):
         self.config = config
-        self.mode = config.get("mode", "local")
+        self._setup_ssh_opts()
 
-    def _detect_local_mode(self) -> bool:
-        """检测是否在集群上"""
-        # 检查 sinfo 命令是否可用
-        result = shutil.which("sinfo")
-        if result:
-            return True
-        # 尝试运行 sinfo
-        try:
-            subprocess.run(["sinfo", "--version"],
-                         capture_output=True, check=True, timeout=5)
-            return True
-        except (subprocess.SubprocessError, FileNotFoundError):
-            return False
+    def _setup_ssh_opts(self):
+        """设置 SSH 选项（跨平台）"""
+        self.ssh_opts = [
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "ConnectTimeout=10"
+        ]
 
-    def _build_ssh_command(self, remote_cmd: str) -> List[str]:
-        """构建 SSH 命令"""
-        cluster = self.config.get("cluster", {})
-        ssh_config = self.config.get("ssh", {})
+        # macOS/Linux 使用 ControlMaster 复用连接
+        if platform.system() in ("Darwin", "Linux"):
+            socket_dir = Path.home() / ".ssh" / "sockets"
+            socket_dir.mkdir(parents=True, exist_ok=True)
+            cluster = self.config.get_cluster_info()
+            host = cluster.get("host", "")
+            port = cluster.get("port", 22)
+            username = cluster.get("username", "")
+            socket_path = socket_dir / f"slurm-{username}@{host}:{port}"
+            self.ssh_opts.extend([
+                "-o", "ControlMaster=auto",
+                "-o", f"ControlPath={socket_path}",
+                "-o", "ControlPersist=600"
+            ])
 
-        host = cluster.get("host", "")
-        port = cluster.get("port", 22)
-        username = cluster.get("username", "")
-        jump_host = cluster.get("jump_host")
+    def run(self, cmd: str) -> str:
+        """在集群上执行命令"""
+        mode = self.config.get_mode()
 
-        ssh_cmd = ["ssh"]
+        if mode == "local":
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            return result.stdout
+        else:
+            cluster = self.config.get_cluster_info()
+            host = cluster.get("host", "")
+            port = cluster.get("port", 22)
+            username = cluster.get("username", "")
+            jump_host = cluster.get("jump_host", "")
 
-        # 端口
-        if port != 22:
-            ssh_cmd.extend(["-p", str(port)])
+            if not host or not username:
+                die("远程模式缺少 host 或 username 配置")
 
-        # 跳板机
-        if jump_host:
-            ssh_cmd.extend(["-J", jump_host])
+            ssh_cmd = ["ssh", "-p", str(port)] + self.ssh_opts.copy()
 
-        # 密钥
-        key_path = ssh_config.get("key_path")
-        if key_path and Path(key_path).exists():
-            ssh_cmd.extend(["-i", key_path])
+            if jump_host:
+                ssh_cmd.extend(["-J", jump_host])
 
-        # 用户名和主机
-        if username:
             ssh_cmd.append(f"{username}@{host}")
-        else:
-            ssh_cmd.append(host)
+            ssh_cmd.append(cmd)
 
-        # 远程命令
-        ssh_cmd.append(remote_cmd)
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            return result.stdout
 
-        return ssh_cmd
+    def transfer(self, src: str, dst: str, download: bool = False, recursive: bool = False) -> bool:
+        """使用 scp 传输文件"""
+        mode = self.config.get_mode()
 
-    def run(self, cmd: str, check: bool = True) -> subprocess.CompletedProcess:
-        """执行命令（本地或远程）"""
-        if self.mode == "local":
-            # 本地模式：直接执行
-            return subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                check=check
-            )
-        else:
-            # 远程模式：通过 SSH 执行
-            ssh_cmd = self._build_ssh_command(cmd)
-            return subprocess.run(
-                ssh_cmd,
-                capture_output=True,
-                text=True,
-                check=check
-            )
+        if mode == "local":
+            try:
+                if recursive:
+                    if Path(dst).exists():
+                        shutil.copytree(src, dst, dirs_exist_ok=True)
+                    else:
+                        shutil.copytree(src, dst)
+                else:
+                    shutil.copy2(src, dst)
+                print_success(f"复制完成: {src} -> {dst}")
+                return True
+            except Exception as e:
+                print_error(f"复制失败: {e}")
+                return False
 
-    def run_interactive(self, cmd: str) -> int:
-        """执行交互式命令"""
-        if self.mode == "local":
-            return os.system(cmd)
-        else:
-            ssh_cmd = self._build_ssh_command(cmd)
-            return subprocess.call(ssh_cmd)
-
-
-class SlurmCLI:
-    """Slurm CLI 主类"""
-
-    def __init__(self, project_root: Optional[str] = None):
-        self.project_root = project_root
-        self.config_manager = ConfigManager(project_root=project_root)
-        self.job_tracker = JobTracker(project_root=project_root)
-        self.partition_cache = PartitionCache(project_root=project_root)
-        self.config = self.config_manager.load()
-        self.executor = SlurmExecutor(self.config)
-
-    # ==================== 初始化和配置 ====================
-
-    def cmd_init(self, args):
-        """初始化配置"""
-        # 检查模式
-        if args.check:
-            self._check_config_status(args.output_json)
-            return
-
-        # 如果提供了命令行参数，使用非交互式配置
-        if args.mode or args.host or args.username:
-            self._init_from_args(args)
-            return
-
-        # 否则使用交互式配置
-        print_info("正在检测环境...")
-
-        # 检测是否在集群上
-        executor = SlurmExecutor({"mode": "local"})
-        if executor._detect_local_mode():
-            print_success("检测到当前已在 Slurm 集群上")
-            self.config["mode"] = "local"
-            self.config["cluster"]["name"] = input("请输入集群名称（可选）: ") or "本地集群"
-            self.config_manager.save(self.config)
-            print_success("配置完成！使用本地模式。")
-            return
-
-        print_info("未检测到 Slurm 环境，将配置远程连接")
-        self._configure_remote()
-        self._test_connection()
-
-    def _check_config_status(self, output_json: bool = False):
-        """检查配置状态"""
-        config = self.config_manager.load()
-        is_configured = self.config_manager.is_configured()
-        config_sources = self.config_manager.get_config_sources()
-
-        if output_json:
-            status = {
-                "configured": is_configured,
-                "mode": config.get("mode"),
-                "cluster": config.get("cluster", {}),
-                "local_slurm_available": self._detect_local_slurm(),
-                "config_sources": config_sources
-            }
-            print(json.dumps(status, indent=2, ensure_ascii=False))
-        else:
-            if is_configured:
-                print_success(f"已配置，模式: {config.get('mode')}")
-                # 显示配置来源
-                if config_sources:
-                    print_info(f"配置来源: {', '.join(config_sources)}")
-                cluster = config.get("cluster", {})
-                if cluster.get("name"):
-                    print_info(f"集群: {cluster['name']}")
-                if cluster.get("host"):
-                    print_info(f"地址: {cluster['username']}@{cluster['host']}:{cluster.get('port', 22)}")
-            else:
-                print_info("尚未配置")
-
-    def _detect_local_slurm(self) -> bool:
-        """检测本地是否有 Slurm"""
-        try:
-            result = subprocess.run(
-                ["sinfo", "--version"],
-                capture_output=True, text=True, timeout=5
-            )
-            return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
-            return False
-
-    def _init_from_args(self, args):
-        """从命令行参数初始化配置"""
-        to_project = getattr(args, 'save_to_project', False)
-
-        if args.mode == "local":
-            self.config["mode"] = "local"
-            self.config["cluster"]["name"] = args.cluster_name or "本地集群"
-            self.config_manager.save(self.config, to_project=to_project)
-            if to_project:
-                print_success("配置完成！使用本地模式（项目级别）。")
-            else:
-                print_success("配置完成！使用本地模式。")
-            return
-
-        # 远程模式
-        if not args.host or not args.username:
-            print_error("远程模式需要 --host 和 --username 参数")
-            sys.exit(1)
-
-        self.config["mode"] = "remote"
-        cluster = self.config.setdefault("cluster", {})
-        cluster["name"] = args.cluster_name or "远程集群"
-        cluster["host"] = args.host
-        cluster["port"] = args.port or 22
-        cluster["username"] = args.username
-        cluster["jump_host"] = args.jump_host
-
-        paths = self.config.setdefault("paths", {})
-        paths["home_on_cluster"] = f"/home/{args.username}"
-
-        self.config_manager.save(self.config, to_project=to_project)
-
-        # 测试连接
-        self._test_connection()
-
-    def _configure_remote(self):
-        """配置远程连接"""
-        print(f"\n{Colors.BOLD}=== 配置远程集群连接 ==={Colors.RESET}\n")
-
-        cluster = self.config.setdefault("cluster", {})
-        ssh = self.config.setdefault("ssh", {})
-        paths = self.config.setdefault("paths", {})
-
-        # 集群名称
-        cluster["name"] = input(f"集群名称 [{cluster.get('name', '我的集群')}]: ") or cluster.get("name", "我的集群")
-
-        # 主机地址
-        cluster["host"] = input(f"登录节点地址 [{cluster.get('host', '')}]: ") or cluster.get("host", "")
-        if not cluster["host"]:
-            print_error("必须提供主机地址")
-            sys.exit(1)
-
-        # 端口
-        port_str = input(f"SSH 端口 [{cluster.get('port', 22)}]: ")
-        cluster["port"] = int(port_str) if port_str else cluster.get("port", 22)
-
-        # 用户名
-        cluster["username"] = input(f"用户名 [{cluster.get('username', '')}]: ") or cluster.get("username", "")
-        if not cluster["username"]:
-            print_error("必须提供用户名")
-            sys.exit(1)
-
-        # 跳板机
-        use_jump = confirm("是否需要跳板机？", default=False)
-        if use_jump:
-            cluster["jump_host"] = input("跳板机地址 (user@host:port): ") or None
-        else:
-            cluster["jump_host"] = None
-
-        # 路径
-        paths["home_on_cluster"] = input(f"集群上的 home 目录 [/{cluster['username']}]: ") or f"/home/{cluster['username']}"
-
-        self.config["mode"] = "remote"
-        self.config_manager.save(self.config)
-
-    def _test_connection(self):
-        """测试连接"""
-        print_info("测试连接...")
-        try:
-            result = self.executor.run("echo 'Connection successful' && sinfo --version")
-            print_success("连接成功！")
-            print_info(f"Slurm 版本: {result.stdout.strip()}")
-        except subprocess.CalledProcessError as e:
-            print_error(f"连接失败: {e.stderr}")
-            print_warning("请检查配置或运行 'slurm-cli.py setup-ssh' 配置密钥登录")
-
-    def cmd_setup_ssh(self, args):
-        """SSH 密钥配置引导"""
-        print(f"\n{Colors.BOLD}=== SSH 密钥配置向导 ==={Colors.RESET}\n")
-
-        ssh_dir = Path.home() / ".ssh"
-        ssh_dir.mkdir(mode=0o700, exist_ok=True)
-
-        default_key = ssh_dir / "id_rsa"
-
-        # 检查是否已有密钥
-        existing_keys = list(ssh_dir.glob("id_*")) + list(ssh_dir.glob("id_*.pub"))
-        existing_keys = [k for k in existing_keys if ".pub" not in str(k) or str(k).endswith(".pub")]
-
-        if existing_keys:
-            print_info(f"发现已有密钥: {[k.name for k in existing_keys if not k.name.endswith('.pub')]}")
-            if not confirm("是否生成新密钥？", default=False):
-                key_path = input(f"使用哪个密钥 [{default_key}]: ") or str(default_key)
-            else:
-                key_path = self._generate_ssh_key()
-        else:
-            print_info("未发现 SSH 密钥")
-            key_path = self._generate_ssh_key()
-
-        # 配置 SSH config
-        self._setup_ssh_config(key_path)
-
-        # 复制公钥到集群
-        self._copy_public_key(key_path)
-
-        print_success("SSH 密钥配置完成！")
-
-    def _generate_ssh_key(self) -> str:
-        """生成 SSH 密钥"""
-        key_path = input(f"密钥保存路径 [{Path.home() / '.ssh' / 'id_rsa'}]: ")
-        if not key_path:
-            key_path = str(Path.home() / ".ssh" / "id_rsa")
-
-        key_type = input("密钥类型 [ed25519/rsa] (默认 ed25519): ") or "ed25519"
-
-        cmd = ["ssh-keygen", "-t", key_type, "-f", key_path]
-        if key_type == "rsa":
-            cmd.extend(["-b", "4096"])
-
-        print_info(f"正在生成 {key_type} 密钥...")
-        subprocess.run(cmd)
-        print_success(f"密钥已生成: {key_path}")
-
-        return key_path
-
-    def _setup_ssh_config(self, key_path: str):
-        """配置 SSH config"""
-        cluster = self.config.get("cluster", {})
+        cluster = self.config.get_cluster_info()
         host = cluster.get("host", "")
         port = cluster.get("port", 22)
         username = cluster.get("username", "")
-        jump_host = cluster.get("jump_host")
+        jump_host = cluster.get("jump_host", "")
 
-        if not host:
-            print_warning("未配置集群信息，跳过 SSH config 配置")
-            return
+        if not host or not username:
+            die("远程模式缺少 host 或 username 配置")
 
-        config_path = Path.home() / ".ssh" / "config"
-        entry_name = input(f"SSH config 条目名称 [{cluster.get('name', 'my-cluster')}]: ") or cluster.get("name", "my-cluster").replace(" ", "-").lower()
+        scp_cmd = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=30"]
 
-        entry = f"\n# {cluster.get('name', '集群')} - 由 slurm-assistant 配置\n"
-        entry += f"Host {entry_name}\n"
-        entry += f"    HostName {host}\n"
-        entry += f"    User {username}\n"
-        entry += f"    Port {port}\n"
-        entry += f"    IdentityFile {key_path}\n"
         if jump_host:
-            entry += f"    ProxyJump {jump_host}\n"
+            scp_cmd.extend(["-J", jump_host])
 
-        if confirm(f"添加以下配置到 {config_path}？\n{entry}", default=True):
-            with open(config_path, 'a') as f:
-                f.write(entry)
-            print_success("SSH config 已更新")
+        if recursive:
+            scp_cmd.append("-r")
 
-            # 更新配置
-            self.config["ssh"]["config_entry"] = entry_name
-            self.config_manager.save(self.config)
+        remote_prefix = f"{username}@{host}:"
+        if download:
+            if not src.startswith(remote_prefix) and ":" not in src:
+                src = remote_prefix + src
+        else:
+            if not dst.startswith(remote_prefix) and ":" not in dst:
+                dst = remote_prefix + dst
 
-    def _copy_public_key(self, key_path: str):
-        """复制公钥到集群"""
-        pub_key_path = Path(key_path + ".pub")
-        if not pub_key_path.exists():
-            print_warning(f"未找到公钥文件: {pub_key_path}")
-            return
+        scp_cmd.extend([src, dst])
+        print_info(f"传输: {' '.join(scp_cmd)}")
 
-        cluster = self.config.get("cluster", {})
-        if not cluster.get("host"):
-            print_warning("未配置集群信息，请手动复制公钥")
-            return
-
-        print_info(f"公钥内容: {pub_key_path.read_text().strip()}")
-        if confirm("是否尝试自动复制公钥到集群？", default=True):
-            print_info("请输入集群密码以复制公钥...")
-            cmd = ["ssh-copy-id"]
-            if cluster.get("port") != 22:
-                cmd.extend(["-p", str(cluster["port"])])
-            if cluster.get("jump_host"):
-                cmd.extend(["-J", cluster["jump_host"]])
-            cmd.append(f"{cluster['username']}@{cluster['host']}")
-            result = subprocess.run(cmd)
+        try:
+            result = subprocess.run(scp_cmd, capture_output=True, text=True)
             if result.returncode == 0:
-                print_success("公钥已复制到集群")
-
-                # 测试免密登录
-                print_info("测试免密登录...")
-                test_result = subprocess.run(
-                    ["ssh", f"{cluster['username']}@{cluster['host']}",
-                     "-p", str(cluster["port"]),
-                     "echo '免密登录成功'"],
-                    capture_output=True, text=True
-                )
-                if test_result.returncode == 0:
-                    print_success("免密登录配置成功！")
+                print_success(f"传输完成: {src} -> {dst}")
+                return True
             else:
-                print_warning("自动复制失败，请手动将公钥添加到集群的 ~/.ssh/authorized_keys")
+                print_error(f"传输失败: {result.stderr}")
+                return False
+        except Exception as e:
+            print_error(f"传输异常: {e}")
+            return False
 
-    # ==================== 资源查看 ====================
+    def check_remote_exists(self, remote_path: str) -> Tuple[bool, str]:
+        """
+        检查远程路径是否存在
+        返回: (是否存在, 类型: 'file'/'dir'/'not_found')
+        """
+        # 展开波浪号
+        test_path = remote_path
+        if remote_path.startswith('~/'):
+            test_path = '$HOME/' + remote_path[2:]
+        elif remote_path == '~':
+            test_path = '$HOME'
 
-    def cmd_status(self, args):
-        """查看资源状态"""
-        self._check_configured()
+        test_cmd = f"test -f {test_path} && echo 'file' || (test -d {test_path} && echo 'dir' || echo 'not_found')"
+        output = self.run(test_cmd).strip()
 
-        if args.nodes:
-            self._show_nodes_status()
-        elif args.partition:
-            self._show_partition_status(args.partition)
+        if output == 'file':
+            return True, 'file'
+        elif output == 'dir':
+            return True, 'dir'
         else:
-            self._show_all_partitions()
+            return False, 'not_found'
 
-    def _show_all_partitions(self):
-        """显示所有分区状态"""
-        print_info("查询分区状态...")
-        try:
-            result = self.executor.run("sinfo -o '%P %G %N %C %D'")
-            print(f"\n{Colors.BOLD}分区状态:{Colors.RESET}")
-            print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
 
-    def _show_partition_status(self, partition: str):
-        """显示特定分区状态"""
-        print_info(f"查询分区 {partition} 状态...")
-        try:
-            result = self.executor.run(f"sinfo -p {partition} -o '%N %C %G'")
-            print(f"\n{Colors.BOLD}分区 {partition} 状态:{Colors.RESET}")
-            print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
+def parse_gpu_gres(gres_str: str) -> Tuple[int, str]:
+    """解析 GRES 字符串，返回 (gpu数量, gpu型号)"""
+    match = re.search(r'gpu(?::(\w+))?:(\d+)', gres_str.lower())
+    if match:
+        gpu_type = match.group(1) or "unknown"
+        gpu_count = int(match.group(2))
+        return gpu_count, gpu_type
+    return 0, ""
 
-    def _show_nodes_status(self):
-        """显示所有节点状态"""
-        print_info("查询节点状态...")
-        try:
-            result = self.executor.run("sinfo -N -o '%N %T %C %G'")
-            print(f"\n{Colors.BOLD}节点状态:{Colors.RESET}")
-            print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
 
-    def cmd_node_info(self, args):
-        """查看节点详情"""
-        self._check_configured()
+def parse_cpu_alloc(alloc_str: str) -> Tuple[int, int, int, int]:
+    """解析 CPU 分配字符串 A/I/O/T，返回 (allocated, idle, other, total)"""
+    parts = alloc_str.split('/')
+    if len(parts) == 4:
+        return int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3])
+    return 0, 0, 0, 0
 
-        print_info(f"查询节点 {args.node} 详情...")
-        try:
-            result = self.executor.run(f"scontrol show node {args.node}")
-            print(f"\n{Colors.BOLD}节点 {args.node} 详情:{Colors.RESET}")
-            print(result.stdout)
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
 
-    # ==================== 交互式资源 ====================
+def calculate_optimal_cpus(executor: SlurmExecutor, partition: str, gres: Optional[str] = None) -> int:
+    """
+    智能计算合理的 CPU 数量
+    返回: min(节点剩余 CPU 数, 节点 CPU 总数/节点显卡总数)
+    """
+    # 获取分区节点信息
+    cmd = f"sinfo -p {partition} -N -h -o '%N|%C|%G'"
+    output = executor.run(cmd)
+    
+    nodes_info = []
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 3:
+            node, cpu, gres = parts[0], parts[1], parts[2]
+            cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu)
+            gpu_count, gpu_type = parse_gpu_gres(gres)
+            
+            nodes_info.append({
+                'cpu_idle': cpu_i,
+                'cpu_total': cpu_t,
+                'gpu_total': gpu_count
+            })
+    
+    if not nodes_info:
+        return 1  # 默认值
+    
+    # 计算 GPU 节点的平均 CPU/GPU 比例
+    gpu_nodes = [n for n in nodes_info if n['gpu_total'] > 0]
+    
+    if gpu_nodes:
+        # GPU 节点：计算 CPU 总数 / GPU 总数，取平均
+        avg_cpus_per_gpu = sum(n['cpu_total'] // max(n['gpu_total'], 1) for n in gpu_nodes) // len(gpu_nodes)
+        # 取最小的空闲 CPU 数
+        min_idle_cpu = min(n['cpu_idle'] for n in gpu_nodes)
+        
+        return max(1, min(min_idle_cpu, avg_cpus_per_gpu))
+    else:
+        # CPU 节点：使用最小的空闲 CPU 数
+        return max(1, min(n['cpu_idle'] for n in nodes_info))
 
-    def cmd_alloc(self, args):
-        """申请交互式资源"""
-        self._check_configured()
 
-        # 构建 salloc 命令
-        cmd_parts = ["salloc"]
+# ============================================================================
+# 命令: init
+# ============================================================================
 
-        if args.partition:
-            cmd_parts.extend(["--partition", args.partition])
-        if args.gres:
-            cmd_parts.extend(["--gres", args.gres])
-        if args.cpus:
-            cmd_parts.extend(["--cpus-per-task", str(args.cpus)])
-        if args.nodes:
-            cmd_parts.extend(["--nodes", str(args.nodes)])
-        if args.time:
-            cmd_parts.extend(["--time", args.time])
-        if args.mem:
-            cmd_parts.extend(["--mem", args.mem])
+def cmd_init(args):
+    """初始化配置"""
+    config = ConfigManager()
 
-        # 保活命令
-        keep_alive = args.keep_alive or self.config.get("defaults", {}).get("keep_alive_duration", "24h")
-
-        # 使用 tmux 运行 sleep 防止资源回收
-        alloc_cmd = " ".join(cmd_parts)
-        keep_cmd = f"tmux new-session -d -s slurm_keep 'sleep {keep_alive}'"
-
-        print_info(f"申请资源: {alloc_cmd}")
-        print_info(f"将在分配的节点上运行保活命令 (tmux + sleep {keep_alive})")
-
-        # 先申请资源
-        result = self.executor.run(alloc_cmd + " --test-only", check=False)
-        if result.returncode != 0:
-            print_warning(f"资源预检: {result.stderr}")
-
-        if not confirm("确认申请资源？", default=True):
-            print_info("已取消")
-            return
-
-        # 实际申请
-        print_info("正在申请资源...")
-        alloc_result = self.executor.run(alloc_cmd + " bash -c '" + keep_cmd + "'")
-
-        if alloc_result.returncode == 0:
-            print_success("资源已分配")
-            print(alloc_result.stdout)
+    if args.check:
+        configured = config.is_configured()
+        if args.output_json:
+            result = {"configured": configured, "local_slurm_available": False}
+            print(json.dumps(result))
         else:
-            print_error(f"申请失败: {alloc_result.stderr}")
+            if configured:
+                print_success("已配置")
+            else:
+                print_warning("未配置")
+        return
 
-    def cmd_release(self, args):
-        """释放资源"""
-        self._check_configured()
+    if not args.mode:
+        die("必须指定 --mode (local 或 remote)")
 
-        # 危险操作确认
-        print_warning(f"⚠️  危险操作：即将释放资源 {args.alloc_id}")
-        if not confirm("确认释放？", default=False):
-            print_info("已取消")
-            return
-
-        # 取消相关作业
-        print_info(f"正在释放资源...")
-        result = self.executor.run(f"scancel {args.alloc_id}", check=False)
-        if result.returncode == 0:
-            print_success("资源已释放")
-        else:
-            print_error(f"释放失败: {result.stderr}")
-
-    # ==================== 运行命令 ====================
-
-    def cmd_run(self, args):
-        """使用 srun 运行命令"""
-        self._check_configured()
-
-        cmd_parts = ["srun"]
-
-        if args.partition:
-            cmd_parts.extend(["--partition", args.partition])
-        if args.gres:
-            cmd_parts.extend(["--gres", args.gres])
-        if args.cpus:
-            cmd_parts.extend(["--cpus-per-task", str(args.cpus)])
-        if args.nodes:
-            cmd_parts.extend(["--nodes", str(args.nodes)])
-        if args.time:
-            cmd_parts.extend(["--time", args.time])
-        if args.mem:
-            cmd_parts.extend(["--mem", args.mem])
-
-        cmd_parts.append("--")
-        cmd_parts.append(args.command)
-
-        full_cmd = " ".join(cmd_parts)
-        print_info(f"执行: {full_cmd}")
-
-        # 交互式执行
-        exit_code = self.executor.run_interactive(full_cmd)
-        if exit_code == 0:
-            print_success("命令执行完成")
-        else:
-            print_error(f"命令执行失败，退出码: {exit_code}")
-
-    # ==================== 作业脚本 ====================
-
-    def cmd_script_gen(self, args):
-        """生成作业脚本"""
-        script_name = args.name or "job"
-        output_path = args.output or f"{script_name}.sh"
-
-        print(f"\n{Colors.BOLD}=== 生成 Slurm 作业脚本 ==={Colors.RESET}\n")
-
-        # 收集参数
-        params = {
-            "name": script_name,
-            "partition": args.partition or input("分区 (留空使用默认): ") or None,
-            "gres": args.gres or input("GRES (如 gpu:1，留空跳过): ") or None,
-            "cpus": args.cpus or input("CPU 核心数 (留空使用默认): ") or None,
-            "nodes": args.nodes or input("节点数 (默认 1): ") or "1",
-            "output": f"logs/{script_name}_%j.out",
-            "error": f"logs/{script_name}_%j.err",
+    if args.mode == "local":
+        config.config = {
+            "mode": "local",
+            "cluster": {"name": args.cluster_name or "local"}
         }
-
-        # 时间和内存 - 只有明确要求才设置
-        if args.time:
-            params["time"] = args.time
-        if args.mem:
-            params["mem"] = args.mem
-
-        # 其他选项
-        params["mail_type"] = input("邮件通知类型 (如 ALL, END, 留空跳过): ") or None
-        params["mail_user"] = input("邮箱地址 (留空跳过): ") or None
-
-        # 命令
-        print("\n请输入要执行的命令 (多行，输入空行结束):")
-        commands = []
-        while True:
-            line = input("  ")
-            if not line:
-                break
-            commands.append(line)
-
-        if not commands:
-            commands = ["# 在此处添加您的命令", "python your_script.py"]
-
-        # 生成脚本
-        script_content = self._generate_script_content(params, commands)
-
-        # 确认保存位置
-        output_path = input(f"\n保存路径 [{output_path}]: ") or output_path
-
-        Path(output_path).write_text(script_content)
-        print_success(f"脚本已生成: {output_path}")
-
-        # 显示脚本内容
-        if confirm("显示脚本内容？", default=True):
-            print(f"\n{Colors.BOLD}--- 脚本内容 ---{Colors.RESET}")
-            print(script_content)
-            print(f"{Colors.BOLD}--- 结束 ---{Colors.RESET}\n")
-
-        # 询问是否立即提交
-        if confirm("立即提交作业？", default=False):
-            self._submit_script(output_path)
-
-    def _generate_script_content(self, params: Dict[str, Any], commands: List[str]) -> str:
-        """生成脚本内容"""
-        lines = ["#!/bin/bash", ""]
-
-        # SBATCH 指令
-        lines.append(f"#SBATCH --job-name={params['name']}")
-
-        if params.get("partition"):
-            lines.append(f"#SBATCH --partition={params['partition']}")
-        if params.get("gres"):
-            lines.append(f"#SBATCH --gres={params['gres']}")
-        if params.get("cpus"):
-            lines.append(f"#SBATCH --cpus-per-task={params['cpus']}")
-        if params.get("nodes"):
-            lines.append(f"#SBATCH --nodes={params['nodes']}")
-        if params.get("time"):
-            lines.append(f"#SBATCH --time={params['time']}")
-        if params.get("mem"):
-            lines.append(f"#SBATCH --mem={params['mem']}")
-
-        lines.append(f"#SBATCH --output={params['output']}")
-        lines.append(f"#SBATCH --error={params['error']}")
-
-        if params.get("mail_type"):
-            lines.append(f"#SBATCH --mail-type={params['mail_type']}")
-        if params.get("mail_user"):
-            lines.append(f"#SBATCH --mail-user={params['mail_user']}")
-
-        lines.append("")
-        lines.append("# ========== 环境设置 ==========")
-        lines.append("")
-        lines.append("# Python 环境选择 (优先级: uv > conda > module)")
-        lines.append("# 方式 1: 使用 uv (推荐)")
-        lines.append("# uv run python your_script.py")
-        lines.append("# 或: uvx --with numpy --with pandas python script.py")
-        lines.append("")
-        lines.append("# 方式 2: 使用 conda")
-        lines.append("# source ~/.bashrc && conda activate my_env")
-        lines.append("")
-        lines.append("# 方式 3: 使用模块系统")
-        lines.append("# module load python/3.9 cuda/11.8")
-        lines.append("")
-        lines.append("# 设置工作目录")
-        lines.append("cd $SLURM_SUBMIT_DIR")
-        lines.append("")
-        lines.append("# 创建日志目录")
-        lines.append("mkdir -p logs")
-        lines.append("")
-        lines.append("# 打印作业信息")
-        lines.append("echo \"Job ID: $SLURM_JOB_ID\"")
-        lines.append("echo \"Running on: $(hostname)\"")
-        lines.append("echo \"Start time: $(date)\"")
-        lines.append("echo \"\"")
-        lines.append("")
-        lines.append("# ========== 主要任务 ==========")
-
-        for cmd in commands:
-            lines.append(cmd)
-
-        lines.append("")
-        lines.append("echo \"\"")
-        lines.append("echo \"End time: $(date)\"")
-        lines.append("")
-
-        return "\n".join(lines)
-
-    # ==================== 作业管理 ====================
-
-    def cmd_submit(self, args):
-        """提交作业"""
-        self._check_configured()
-
-        script_path = args.script
-        if not Path(script_path).exists():
-            print_error(f"脚本不存在: {script_path}")
-            return
-
-        self._submit_script(script_path)
-
-    def _submit_script(self, script_path: str):
-        """提交脚本并记录"""
-        print_info(f"提交作业: {script_path}")
-
-        try:
-            result = self.executor.run(f"sbatch {script_path}")
-
-            # 解析作业 ID
-            output = result.stdout.strip()
-            print(output)
-
-            # 通常格式是 "Submitted batch job 12345"
-            if "Submitted batch job" in output:
-                job_id = output.split()[-1]
-
-                # 提取脚本中的输出文件路径
-                script_content = Path(script_path).read_text()
-                output_file = self._extract_sbatch_param(script_content, "output") or f"slurm-{job_id}.out"
-                error_file = self._extract_sbatch_param(script_content, "error") or output_file.replace(".out", ".err")
-
-                # 记录作业
-                self.job_tracker.add_job(
-                    job_id=job_id,
-                    name=Path(script_path).stem,
-                    script=str(Path(script_path).absolute()),
-                    output_file=output_file.replace("%j", job_id),
-                    error_file=error_file.replace("%j", job_id)
-                )
-
-                print_success(f"作业已提交，ID: {job_id}")
-                print_info(f"日志文件: {output_file.replace('%j', job_id)}")
-
-        except subprocess.CalledProcessError as e:
-            print_error(f"提交失败: {e.stderr}")
-
-    def _extract_sbatch_param(self, content: str, param: str) -> Optional[str]:
-        """从脚本中提取 SBATCH 参数"""
-        import re
-        pattern = rf"#SBATCH\s+--{param}=(.+)"
-        match = re.search(pattern, content)
-        return match.group(1).strip() if match else None
-
-    def cmd_jobs(self, args):
-        """查看作业状态"""
-        self._check_configured()
-
-        if args.id:
-            self._show_job_detail(args.id)
-        else:
-            self._show_all_jobs()
-
-    def _show_all_jobs(self):
-        """显示所有作业"""
-        print_info("查询作业状态...")
-        try:
-            result = self.executor.run("squeue -u $USER -o '%.10i %.20j %.8T %.10M %.6D %R'")
-            print(f"\n{Colors.BOLD}您的作业:{Colors.RESET}")
-            print(result.stdout)
-
-            # 同时显示 skill 记录的作业
-            tracked = self.job_tracker.list_jobs()
-            if tracked:
-                print(f"\n{Colors.BOLD}此 skill 提交的作业记录:{Colors.RESET}")
-                for job in tracked[-10:]:  # 最近 10 个
-                    status = job.get("status", "UNKNOWN")
-                    status_color = Colors.GREEN if status == "COMPLETED" else (
-                        Colors.YELLOW if status == "RUNNING" else Colors.BLUE
-                    )
-                    print(f"  {job['job_id']}: {job['name']} [{status_color}{status}{Colors.RESET}] @ {job['submitted_at']}")
-
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
-
-    def _show_job_detail(self, job_id: str):
-        """显示作业详情"""
-        print_info(f"查询作业 {job_id} 详情...")
-        try:
-            result = self.executor.run(f"scontrol show job {job_id}")
-            print(f"\n{Colors.BOLD}作业 {job_id} 详情:{Colors.RESET}")
-            print(result.stdout)
-
-            # 显示 skill 记录的信息
-            tracked = self.job_tracker.get_job(job_id)
-            if tracked:
-                print(f"\n{Colors.BOLD}Skill 记录:{Colors.RESET}")
-                print(f"  脚本: {tracked.get('script')}")
-                print(f"  输出: {tracked.get('output_file')}")
-                print(f"  错误: {tracked.get('error_file')}")
-
-        except subprocess.CalledProcessError as e:
-            print_error(f"查询失败: {e.stderr}")
-
-    def cmd_log(self, args):
-        """查看作业日志"""
-        self._check_configured()
-
-        job_id = args.job_id
-
-        # 先尝试从记录中获取日志路径
-        tracked = self.job_tracker.get_job(job_id)
-        if tracked:
-            output_file = tracked.get("output_file")
-            print_info(f"日志文件: {output_file}")
-        else:
-            # 使用默认路径
-            output_file = f"slurm-{job_id}.out"
-            print_info(f"使用默认日志路径: {output_file}")
-
-        if args.follow:
-            # 实时跟踪
-            print_info("实时跟踪日志 (Ctrl+C 退出)...")
-            self.executor.run_interactive(f"tail -f {output_file}")
-        else:
-            # 显示日志内容
-            try:
-                result = self.executor.run(f"cat {output_file}")
-                print(f"\n{Colors.BOLD}=== 日志内容 ==={Colors.RESET}")
-                print(result.stdout)
-            except subprocess.CalledProcessError as e:
-                print_error(f"读取日志失败: {e.stderr}")
-
-    def cmd_cancel(self, args):
-        """取消作业"""
-        self._check_configured()
-
-        job_ids = args.job_ids
-
-        if args.all:
-            # 取消所有作业
-            print_warning("⚠️  危险操作：即将取消您的所有作业")
-            if not confirm("确认取消所有作业？", default=False):
-                print_info("已取消")
-                return
-
-            result = self.executor.run("scancel -u $USER")
-            if result.returncode == 0:
-                print_success("所有作业已取消")
-                # 更新记录状态
-                for job in self.job_tracker.list_jobs():
-                    self.job_tracker.update_status(job["job_id"], "CANCELLED")
-            else:
-                print_error(f"取消失败: {result.stderr}")
-            return
-
-        # 取消指定作业
-        for job_id in job_ids:
-            # 获取作业信息用于确认
-            tracked = self.job_tracker.get_job(job_id)
-
-            print_warning(f"⚠️  危险操作：即将取消作业 {job_id}")
-            if tracked:
-                print(f"    作业名称：{tracked.get('name')}")
-                print(f"    状态：{tracked.get('status')}")
-                print(f"    提交时间：{tracked.get('submitted_at')}")
-
-            if not confirm("确认取消？", default=False):
-                print_info(f"跳过作业 {job_id}")
-                continue
-
-            result = self.executor.run(f"scancel {job_id}", check=False)
-            if result.returncode == 0:
-                print_success(f"作业 {job_id} 已取消")
-                self.job_tracker.update_status(job_id, "CANCELLED")
-            else:
-                print_error(f"取消作业 {job_id} 失败: {result.stderr}")
-
-    def cmd_history(self, args):
-        """查看作业历史"""
-        jobs = self.job_tracker.list_jobs(since=args.since)
-
-        if not jobs:
-            print_info("暂无作业记录")
-            return
-
-        print(f"\n{Colors.BOLD}作业历史记录:{Colors.RESET}\n")
-        print(f"{'ID':<10} {'名称':<20} {'状态':<12} {'提交时间':<20} {'脚本'}")
-        print("-" * 80)
-
-        for job in jobs:
-            status = job.get("status", "UNKNOWN")
-            status_color = Colors.GREEN if status == "COMPLETED" else (
-                Colors.YELLOW if status in ("RUNNING", "PENDING") else Colors.RED
-            )
-            print(f"{job['job_id']:<10} {job['name']:<20} {status_color}{status:<12}{Colors.RESET} {job['submitted_at'][:19]:<20} {job.get('script', 'N/A')}")
-
-        if args.export:
-            export_path = args.export
-            Path(export_path).write_text(json.dumps({"jobs": jobs}, indent=2, ensure_ascii=False))
-            print_success(f"历史记录已导出到: {export_path}")
-
-    # ==================== 分区缓存管理 ====================
-
-    def cmd_refresh_cache(self, args):
-        """刷新分区节点缓存"""
-        self._check_configured()
-
-        cluster_name = self.config.get("cluster", {}).get("name", "default")
-        print_info(f"正在获取 {cluster_name} 集群的分区节点信息...")
-
-        try:
-            partitions = self._fetch_all_partitions()
-            if not partitions:
-                print_warning("未获取到任何分区信息")
-                return
-
-            self.partition_cache.set_partitions(cluster_name, partitions)
-            print_success(f"缓存已更新，共 {len(partitions)} 个分区")
-
-            # 显示简要信息
-            for p in partitions:
-                nodes = p.get("nodes", [])
-                gpu_nodes = [n for n in nodes if n.get("gres") and "gpu" in n.get("gres", "").lower()]
-                print(f"  - {p['name']}: {len(nodes)} 节点, {len(gpu_nodes)} GPU 节点")
-
-        except subprocess.CalledProcessError as e:
-            print_error(f"获取分区信息失败: {e.stderr}")
-
-    def _fetch_all_partitions(self) -> List[Dict[str, Any]]:
-        """获取所有分区和节点信息"""
-        partitions = []
-
-        # 获取所有分区
-        result = self.executor.run("sinfo -o '%P' --noheader", check=True)
-        partition_lines = result.stdout.strip().split('\n')
-
-        for part_line in partition_lines:
-            if not part_line.strip():
-                continue
-
-            part_name = part_line.strip().rstrip('*')
-
-            # 获取分区详情
-            partition_data = {
-                "name": part_name,
-                "nodes": []
+    else:
+        if not args.host or not args.username:
+            die("远程模式必须指定 --host 和 --username")
+        config.config = {
+            "mode": "remote",
+            "cluster": {
+                "name": args.cluster_name or "remote",
+                "host": args.host,
+                "port": args.port or 22,
+                "username": args.username,
+                "jump_host": args.jump_host or ""
             }
-
-            # 获取该分区的所有节点
-            node_result = self.executor.run(f"sinfo -N -p {part_name} -o '%N' --noheader", check=False)
-            if node_result.returncode == 0:
-                node_names = node_result.stdout.strip().split('\n')
-                node_names = [n.strip() for n in node_names if n.strip()]
-
-                # 获取每个节点的详细信息
-                for node_name in node_names:
-                    node_info = self._fetch_node_info(node_name)
-                    partition_data["nodes"].append(node_info)
-
-            partitions.append(partition_data)
-
-        return partitions
-
-    def _fetch_node_info(self, node_name: str) -> Dict[str, Any]:
-        """获取单个节点的硬件配置信息（不包含状态）"""
-        node_info = {
-            "name": node_name,
-            "cpus": None,
-            "memory": None,
-            "gres": None,
-            "gres_detail": None
         }
 
+    config.save()
+    print_success(f"配置已保存到 {CONFIG_FILE}")
+
+    if args.mode == "remote":
+        print_info("测试 SSH 连接...")
+        executor = SlurmExecutor(config)
         try:
-            result = self.executor.run(f"scontrol show node {node_name}", check=True)
-            output = result.stdout
+            result = executor.run("echo '连接成功'")
+            if "连接成功" in result:
+                print_success("SSH 连接成功")
+            else:
+                print_warning("SSH 连接失败，请配置免密登录")
+        except Exception as e:
+            print_warning(f"SSH 连接失败: {e}")
 
-            # 解析 scontrol 输出，只获取硬件配置
-            for line in output.split('\n'):
-                line = line.strip()
-                if 'RealMemory=' in line:
-                    try:
-                        mem_mb = int(line.split('RealMemory=')[1].split()[0])
-                        node_info["memory"] = f"{mem_mb // 1024}G"
-                    except:
-                        pass
-                elif 'Cores=' in line:
-                    try:
-                        cores = line.split('Cores=')[1].split()[0]
-                        node_info["cpus"] = cores
-                    except:
-                        pass
-                elif 'Gres=' in line:
-                    # Gres=gpu:2(S:0-1) 或 Gres=gpu:a100:4(S:0-3)
-                    gres = line.split('Gres=')[1].split()[0]
-                    node_info["gres"] = gres
-                    # 尝试获取更多 GPU 详情
-                    if 'gpu:' in gres.lower():
-                        node_info["gres_detail"] = self._parse_gpu_gres(gres)
 
-        except subprocess.CalledProcessError:
-            pass
+# ============================================================================
+# 命令: status
+# ============================================================================
 
-        return node_info
+def cmd_status(args):
+    """查看资源状态"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
 
-    def _parse_gpu_gres(self, gres: str) -> Dict[str, Any]:
-        """解析 GPU GRES 字符串，获取 GPU 详情"""
-        # 示例: gpu:2(S:0-1) 或 gpu:a100:4(S:0-3)
-        gpu_detail = {"type": "unknown", "count": 0}
+    executor = SlurmExecutor(config)
 
-        if "gpu:" not in gres.lower():
-            return gpu_detail
+    if args.gpu:
+        _show_gpu_status(executor, args.partition)
+    elif args.nodes:
+        cmd = "sinfo -N -o '%P %N %C %G %m'"
+        if args.partition:
+            cmd += f" -p {args.partition}"
+        output = executor.run(cmd)
+        print(output)
+    else:
+        cmd = "sinfo -o '%P %A %C %m %D'"
+        if args.partition:
+            cmd += f" -p {args.partition}"
+        output = executor.run(cmd)
+        print(output)
 
-        # 提取 GPU 数量和类型
-        parts = gres.split('(')[0].strip()  # 去掉 (S:0-1) 部分
-        if ':' in parts:
-            # 有 GPU 类型，如 gpu:a100:4
-            _, gpu_type, count_str = parts.split(':')
-            gpu_detail["type"] = gpu_type
-            gpu_detail["count"] = int(count_str)
-        else:
-            # 只有 gpu:N，如 gpu:2
-            _, count_str = parts.split(':')
-            gpu_detail["count"] = int(count_str)
 
-        return gpu_detail
+def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
+    """显示 GPU 节点状态"""
+    cmd = "sinfo -N -o '%N|%G|%C|%P'"
+    if partition:
+        cmd += f" -p {partition}"
+    
+    output = executor.run(cmd)
+    
+    gpu_nodes = []
+    for line in output.splitlines()[1:]:
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 4:
+            node_name, gres, cpu_alloc, part = parts[0], parts[1], parts[2], parts[3]
+            
+            if 'gpu' in gres.lower():
+                gpu_count, gpu_type = parse_gpu_gres(gres)
+                cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu_alloc)
+                gpu_nodes.append({
+                    'node': node_name,
+                    'partition': part,
+                    'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
+                    'gpu_total': gpu_count,
+                    'cpu_idle': cpu_i,
+                    'cpu_total': cpu_t,
+                    'cpu_alloc': cpu_a
+                })
+    
+    if not gpu_nodes:
+        print_info("未找到 GPU 节点")
+        return
+    
+    gpu_nodes.sort(key=lambda x: (x['partition'], x['node']))
+    
+    nodes_str = ','.join([n['node'] for n in gpu_nodes])
+    jobs_output = executor.run(f"squeue -t RUNNING -h -o '%N|%b' -w {nodes_str}")
+    
+    node_gpu_used = {}
+    for line in jobs_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 2:
+            node = parts[0]
+            gres = parts[1]
+            match = re.search(r'gpu:\w*:?(\d+)', gres.lower())
+            if match:
+                used = int(match.group(1))
+                node_gpu_used[node] = node_gpu_used.get(node, 0) + used
+    
+    print(f"{'节点':<20} {'分区':<12} {'GPU 空闲/总数':<15} {'CPU 空闲/总数':<15} {'GPU型号'}")
+    print("-" * 90)
+    
+    for node in gpu_nodes:
+        node_name = node['node']
+        gpu_used = node_gpu_used.get(node_name, 0)
+        gpu_idle = max(0, node['gpu_total'] - gpu_used)
+        
+        print(f"{node_name:<20} {node['partition']:<12} "
+              f"{gpu_idle}/{node['gpu_total']:<13} "
+              f"{node['cpu_idle']}/{node['cpu_total']:<13} "
+              f"{node['gpu_type']}")
 
-    def cmd_show_cache(self, args):
-        """显示分区节点缓存"""
-        self._check_configured()
 
-        cluster_name = self.config.get("cluster", {}).get("name", "default")
+# ============================================================================
+# 命令: node-info
+# ============================================================================
 
-        if not self.partition_cache.is_cache_valid(cluster_name):
-            print_warning("缓存已过期或不存在，请先运行 refresh-cache 命令更新缓存")
-            print_info("运行: python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py refresh-cache")
-            return
+def cmd_node_info(args):
+    """查看节点详情"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
 
-        partitions = self.partition_cache.get_partitions(cluster_name)
-        if not partitions:
-            print_info("暂无缓存数据")
-            return
+    if not args.node:
+        die("必须指定节点名称")
 
-        # 显示缓存信息
-        cache_data = self.partition_cache.load()
-        updated_at = cache_data.get(cluster_name, {}).get("updated_at", "unknown")
+    executor = SlurmExecutor(config)
+    output = executor.run(f"scontrol show node {args.node}")
+    print(output)
 
-        print(f"\n{Colors.BOLD}集群分区节点信息{Colors.RESET}")
-        print(f"集群: {cluster_name}")
-        print(f"更新时间: {updated_at}")
-        print(f"分区数量: {len(partitions)}\n")
 
-        for p in partitions:
-            part_name = p.get("name")
-            nodes = p.get("nodes", [])
+# ============================================================================
+# 命令: node-jobs
+# ============================================================================
 
-            # 统计 GPU 节点
-            gpu_nodes = [n for n in nodes if n.get("gres") and "gpu" in n.get("gres", "").lower()]
+def cmd_node_jobs(args):
+    """查看节点上的作业"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
 
-            print(f"{Colors.BOLD}分区: {part_name}{Colors.RESET}")
-            print(f"  总节点数: {len(nodes)}")
-            print(f"  GPU 节点数: {len(gpu_nodes)}")
+    if not args.node:
+        die("必须指定节点名称")
 
-            if gpu_nodes:
-                print(f"\n  {Colors.BLUE}GPU 节点详情:{Colors.RESET}")
-                for node in gpu_nodes:
-                    self._print_node_info(node, indent=4)
-            print()
-
-    def _print_node_info(self, node: Dict[str, Any], indent: int = 0):
-        """打印节点硬件配置信息"""
-        prefix = " " * indent
-        name = node.get("name", "unknown")
-        cpus = node.get("cpus", "?")
-        memory = node.get("memory", "?")
-        gres = node.get("gres", "")
-        gres_detail = node.get("gres_detail", {})
-
-        print(f"{prefix}{Colors.BOLD}{name}{Colors.RESET}")
-
-        if gres_detail:
-            gpu_type = gres_detail.get("type", "unknown")
-            gpu_count = gres_detail.get("count", 0)
-            print(f"{prefix}  GPU: {gpu_type} x {gpu_count}")
-        else:
-            print(f"{prefix}  GRES: {gres}")
-
-        print(f"{prefix}  CPU: {cpus} 核心")
-        print(f"{prefix}  内存: {memory}")
-
-    def cmd_find_gpu(self, args):
-        """查找可用 GPU 资源"""
-        self._check_configured()
-
-        cluster_name = self.config.get("cluster", {}).get("name", "default")
-        partitions = self.partition_cache.get_partitions(cluster_name)
-
-        if not partitions:
-            print_warning("缓存未初始化，正在自动刷新...")
-            self.cmd_refresh_cache(args)
-            partitions = self.partition_cache.get_partitions(cluster_name)
-
-        # 查找符合要求的 GPU 节点
-        req_count = args.count
-        req_type = args.type.lower() if args.type else None
-
-        print(f"\n{Colors.BOLD}查找 GPU 资源:{Colors.RESET}")
-        print(f"需求: {req_type or '任意'} GPU x {req_count}\n")
-
-        found_nodes = []
-
-        for p in partitions:
-            nodes = p.get("nodes", [])
-            for node in nodes:
-                gres_detail = node.get("gres_detail", {})
-                if not gres_detail or gres_detail.get("count", 0) == 0:
-                    continue
-
-                gpu_type = gres_detail.get("type", "unknown")
-                gpu_count = gres_detail.get("count", 0)
-
-                # 检查 GPU 数量是否满足
-                if gpu_count < req_count:
-                    continue
-
-                # 检查 GPU 类型是否匹配
-                if req_type is not None and req_type not in gpu_type.lower():
-                    continue
-
-                # 动态查询节点当前状态
-                node_state = self._get_node_state(node["name"])
-                is_available = "idle" in node_state.lower() or "mix" in node_state.lower()
-
-                if is_available:
-                    found_nodes.append({
-                        "partition": p.get("name"),
-                        "node": node,
-                        "state": node_state,
-                        "available_gpus": gpu_count,
-                        "gpu_type": gpu_type
+    executor = SlurmExecutor(config)
+    
+    running_output = executor.run(
+        f"squeue -w {args.node} -t RUNNING -h -o '%i|%j|%u|%T|%M|%m'"
+    )
+    
+    pending_output = executor.run(
+        f"squeue -t PENDING -h -o '%i|%j|%u|%T|%M|%P|%m'"
+    )
+    
+    running_jobs = []
+    pending_jobs = []
+    
+    for line in running_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 6:
+            running_jobs.append({
+                'id': parts[0],
+                'name': parts[1],
+                'user': parts[2],
+                'status': parts[3],
+                'time': parts[4],
+                'mem': parts[5]
+            })
+    
+    if pending_output.strip():
+        node_info = executor.run(f"sinfo -N -n {args.node} -h -o '%P'")
+        node_partitions = [p.strip() for p in node_info.splitlines() if p.strip()]
+        
+        for line in pending_output.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split('|')
+            if len(parts) >= 7:
+                job_partition = parts[5]
+                if job_partition in node_partitions:
+                    pending_jobs.append({
+                        'id': parts[0],
+                        'name': parts[1],
+                        'user': parts[2],
+                        'status': parts[3],
+                        'wait_time': parts[4],
+                        'mem': parts[6]
                     })
+    
+    print(f"节点: {args.node}")
+    print()
+    
+    print(f"[RUNNING] 运行中的作业 ({len(running_jobs)} 个)")
+    if running_jobs:
+        print(f"{'JOBID':<10} {'名称':<25} {'用户':<12} {'运行时长':<12} {'内存'}")
+        print("-" * 75)
+        for job in running_jobs:
+            print(f"{job['id']:<10} {job['name'][:24]:<25} {job['user']:<12} "
+                  f"{job['time']:<12} {job['mem']}")
+    else:
+        print("  无")
+    
+    print()
+    
+    print(f"[PENDING] 排队中的作业 ({len(pending_jobs)} 个)")
+    if pending_jobs:
+        print(f"{'JOBID':<10} {'名称':<25} {'用户':<12} {'排队时长':<12} {'内存'}")
+        print("-" * 75)
+        for job in pending_jobs:
+            print(f"{job['id']:<10} {job['name'][:24]:<25} {job['user']:<12} "
+                  f"{job['wait_time']:<12} {job['mem']}")
+    else:
+        print("  无")
+    
+    print()
+    print("=" * 50)
+    print(f"总计: {len(running_jobs)} 个运行中, {len(pending_jobs)} 个排队中")
 
-        if found_nodes:
-            print_success(f"找到 {len(found_nodes)} 个符合条件的节点:\n")
-            for item in found_nodes:
-                node = item["node"]
-                state = item["state"]
-                state_color = Colors.GREEN if "idle" in state.lower() or "mix" in state.lower() else Colors.RED
-                print(f"  {Colors.BOLD}{node['name']}{Colors.RESET} [{item['partition']}]")
-                print(f"    GPU: {item['gpu_type']} x {item['available_gpus']}")
-                print(f"    状态: {state_color}{state}{Colors.RESET}")
-                print(f"    内存: {node.get('memory')}")
-                print(f"    CPU: {node.get('cpus')} 核心")
-                print()
+
+# ============================================================================
+# 命令: partition-info
+# ============================================================================
+
+def cmd_partition_info(args):
+    """查看分区详细信息"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    executor = SlurmExecutor(config)
+    
+    if args.partition:
+        nodes_output = executor.run(f"sinfo -p {args.partition} -N -h -o '%N|%C|%G|%m'")
+        jobs_output = executor.run(
+            f"squeue -p {args.partition} -t RUNNING -h -o '%i|%N|%b|%M'"
+        )
+    else:
+        nodes_output = executor.run("sinfo -N -h -o '%N|%P|%C|%G|%m'")
+        jobs_output = executor.run("squeue -t RUNNING -h -o '%i|%N|%b|%M'")
+    
+    nodes = {}
+    for line in nodes_output.splitlines():
+        if not line.strip():
+            continue
+        if args.partition:
+            parts = line.split('|')
+            if len(parts) >= 4:
+                node, cpu, gres, mem = parts[0], parts[1], parts[2], parts[3]
+                partition = args.partition
+            else:
+                continue
         else:
-            print_warning("未找到符合要求的 GPU 节点")
-            print_info("可用选项:")
-            print_info("  - 查看所有分区: slurm-cli.py show-cache")
-            print_info("  - 刷新缓存: slurm-cli.py refresh-cache")
+            parts = line.split('|')
+            if len(parts) >= 5:
+                node, partition, cpu, gres, mem = parts[0], parts[1], parts[2], parts[3], parts[4]
+            else:
+                continue
+        
+        cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu)
+        has_gpu = 'gpu' in gres.lower()
+        gpu_count, gpu_type = parse_gpu_gres(gres) if has_gpu else (0, '')
+        
+        if partition not in nodes:
+            nodes[partition] = {}
+        
+        nodes[partition][node] = {
+            'cpu_idle': cpu_i,
+            'cpu_total': cpu_t,
+            'cpu_alloc': cpu_a,
+            'has_gpu': has_gpu,
+            'gpu_total': gpu_count,
+            'gpu_type': gpu_type,
+            'mem': mem,
+            'jobs': 0,
+            'gpu_used': 0
+        }
+    
+    for line in jobs_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 4:
+            job_id, node_list, gres, run_time = parts[0], parts[1], parts[2], parts[3]
+            for node in node_list.split(','):
+                if not node.strip():
+                    continue
+                for p, p_nodes in nodes.items():
+                    if node in p_nodes:
+                        p_nodes[node]['jobs'] += 1
+                        match = re.search(r'gpu:\w*:?(\d+)', gres.lower())
+                        if match:
+                            p_nodes[node]['gpu_used'] += int(match.group(1))
+    
+    for partition, p_nodes in sorted(nodes.items()):
+        print(f"\n{'='*60}")
+        print(f"分区: {partition}")
+        print(f"{'='*60}")
+        
+        gpu_nodes = {k: v for k, v in p_nodes.items() if v['has_gpu']}
+        cpu_nodes = {k: v for k, v in p_nodes.items() if not v['has_gpu']}
+        
+        if gpu_nodes:
+            print(f"\n[GPU 节点] ({len(gpu_nodes)} 个)")
+            print(f"{'节点':<18} {'GPU 空闲/总数':<14} {'CPU 空闲/总数':<14} {'作业数':<8} {'内存'}")
+            print("-" * 75)
+            for node, info in sorted(gpu_nodes.items()):
+                gpu_idle = max(0, info['gpu_total'] - info['gpu_used'])
+                print(f"{node:<18} {gpu_idle}/{info['gpu_total']:<12} "
+                      f"{info['cpu_idle']}/{info['cpu_total']:<12} "
+                      f"{info['jobs']:<8} {info['mem']}")
+        
+        if cpu_nodes:
+            print(f"\n[CPU 节点] ({len(cpu_nodes)} 个)")
+            print(f"{'节点':<18} {'CPU 空闲/总数':<14} {'作业数':<8} {'内存'}")
+            print("-" * 55)
+            for node, info in sorted(cpu_nodes.items()):
+                print(f"{node:<18} {info['cpu_idle']}/{info['cpu_total']:<12} "
+                      f"{info['jobs']:<8} {info['mem']}")
 
-    def _get_node_state(self, node_name: str) -> str:
-        """动态获取节点当前状态"""
+
+# ============================================================================
+# 命令: find-gpu
+# ============================================================================
+
+def cmd_find_gpu(args):
+    """查找 GPU 资源"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    executor = SlurmExecutor(config)
+    
+    output = executor.run("sinfo -N -o '%N|%G|%C|%P'")
+    
+    gpu_nodes = []
+    for line in output.splitlines()[1:]:
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 4:
+            node, gres, cpu, partition = parts[0], parts[1], parts[2], parts[3]
+            
+            if 'gpu' in gres.lower():
+                gpu_count, gpu_type = parse_gpu_gres(gres)
+                cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu)
+                
+                if args.gpu_type and args.gpu_type.lower() not in gpu_type.lower():
+                    continue
+                
+                gpu_nodes.append({
+                    'node': node,
+                    'partition': partition,
+                    'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
+                    'gpu_total': gpu_count,
+                    'cpu_idle': cpu_i,
+                    'cpu_total': cpu_t
+                })
+    
+    if not gpu_nodes:
+        print_info("未找到匹配的 GPU 节点")
+        return
+    
+    nodes_str = ','.join([n['node'] for n in gpu_nodes])
+    jobs_output = executor.run(f"squeue -t RUNNING -h -o '%N|%b' -w {nodes_str}")
+    
+    node_gpu_used = {}
+    for line in jobs_output.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 2:
+            node = parts[0]
+            gres = parts[1]
+            match = re.search(r'gpu:\w*:?(\d+)', gres.lower())
+            if match:
+                used = int(match.group(1))
+                node_gpu_used[node] = node_gpu_used.get(node, 0) + used
+    
+    print(f"{'节点':<20} {'分区':<12} {'GPU 空闲/总数':<15} {'CPU 空闲/总数':<15} {'GPU型号'}")
+    print("-" * 90)
+    
+    for node in gpu_nodes:
+        node_name = node['node']
+        gpu_used = node_gpu_used.get(node_name, 0)
+        gpu_idle = max(0, node['gpu_total'] - gpu_used)
+        
+        print(f"{node_name:<20} {node['partition']:<12} "
+              f"{gpu_idle}/{node['gpu_total']:<13} "
+              f"{node['cpu_idle']}/{node['cpu_total']:<13} "
+              f"{node['gpu_type']}")
+
+
+# ============================================================================
+# 命令: alloc / release / run / submit / jobs / log / cancel / history
+# ============================================================================
+
+def cmd_alloc(args):
+    """申请交互式资源"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.partition:
+        die("必须指定分区 (-p)")
+
+    executor = SlurmExecutor(config)
+    
+    # 智能计算 CPU 数量（如果未指定）
+    cpus = args.cpus
+    if cpus == 1:
+        # 尝试智能计算
+        optimal_cpus = calculate_optimal_cpus(executor, args.partition, args.gres)
+        if optimal_cpus > 1:
+            cpus = optimal_cpus
+            print_info(f"自动计算 CPU 数量: {cpus}")
+    
+    # 构建命令
+    cmd = f"salloc -p {args.partition} --cpus-per-task={cpus} --time={args.time}"
+    
+    if args.gres:
+        cmd += f" --gres={args.gres}"
+    
+    if args.max_wait:
+        # 添加等待时间限制
+        cmd += f" --wait={args.max_wait}"
+        print_info(f"最大等待时间: {args.max_wait}")
+    
+    print_info(f"申请资源: {cmd}")
+    output = executor.run(cmd)
+    print(output)
+
+
+def cmd_release(args):
+    """释放资源"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.job_id:
+        die("必须指定作业 ID")
+
+    executor = SlurmExecutor(config)
+    print_warning(f"即将释放资源: 作业 {args.job_id}")
+    executor.run(f"scancel {args.job_id}")
+    print_success("资源已释放")
+
+
+def cmd_run(args):
+    """srun 运行命令"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.command:
+        die("必须指定要运行的命令")
+
+    executor = SlurmExecutor(config)
+    cmd = f"srun {' '.join(args.command)}"
+    output = executor.run(cmd)
+    print(output)
+
+
+def cmd_submit(args):
+    """提交作业"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.script:
+        die("必须指定脚本路径")
+
+    executor = SlurmExecutor(config)
+    output = executor.run(f"sbatch '{args.script}'")
+    print(output)
+
+    match = re.search(r'Submitted batch job (\d+)', output)
+    if match:
+        job_id = match.group(1)
+        _record_job(job_id, args.script)
+        print_success(f"作业已提交: {job_id}")
+
+
+def _record_job(job_id: str, script: str):
+    """记录作业到历史"""
+    SKILL_DIR.mkdir(parents=True, exist_ok=True)
+    jobs_data = {"jobs": []}
+    if JOBS_FILE.exists():
         try:
-            result = self.executor.run(f"sinfo -N -n {node_name} -o '%T' --noheader", check=True)
-            return result.stdout.strip()
-        except subprocess.CalledProcessError:
-            return "unknown"
+            jobs_data = json.loads(JOBS_FILE.read_text())
+        except json.JSONDecodeError:
+            pass
+    jobs_data["jobs"].append({
+        "job_id": job_id,
+        "script": script,
+        "submitted_at": datetime.now().isoformat(),
+        "status": "PENDING"
+    })
+    JOBS_FILE.write_text(json.dumps(jobs_data, indent=2, ensure_ascii=False))
 
-    # ==================== 辅助方法 ====================
 
-    def _check_configured(self):
-        """检查是否已配置"""
-        if not self.config_manager.is_configured():
-            print_error("尚未配置集群信息")
-            print_info("请运行: slurm-cli.py init")
-            sys.exit(1)
+def cmd_jobs(args):
+    """查看作业状态"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
 
+    executor = SlurmExecutor(config)
+
+    if args.id:
+        cmd = f"squeue -j {args.id}"
+    else:
+        cmd = "squeue -u $USER"
+
+    cmd += " -o '%.8i %.9P %.30j %.8u %.2t %.10M %.6D %R'"
+    output = executor.run(cmd)
+    print(output)
+
+
+def cmd_log(args):
+    """查看作业日志"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.job_id:
+        die("必须指定作业 ID")
+
+    executor = SlurmExecutor(config)
+    log_file = f"slurm-{args.job_id}.out"
+
+    if args.follow:
+        output = executor.run(f"tail -f {log_file} 2>/dev/null || cat /dev/null")
+    else:
+        output = executor.run(f"cat {log_file} 2>/dev/null || echo '日志文件不存在'")
+    print(output)
+
+
+def cmd_cancel(args):
+    """取消作业"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.job_ids:
+        die("必须指定作业 ID")
+
+    executor = SlurmExecutor(config)
+    for job_id in args.job_ids:
+        print_warning(f"取消作业: {job_id}")
+        executor.run(f"scancel {job_id}")
+    print_success(f"已取消 {len(args.job_ids)} 个作业")
+
+
+def cmd_history(args):
+    """作业历史"""
+    if not JOBS_FILE.exists():
+        print_info("暂无作业历史")
+        return
+
+    try:
+        jobs_data = json.loads(JOBS_FILE.read_text())
+        for job in jobs_data.get("jobs", []):
+            status = job.get("status", "UNKNOWN")
+            job_id = job.get("job_id", "?")
+            script = job.get("script", "unnamed")
+            submitted = job.get("submitted_at", "?")
+            print(f"[{status}] {job_id} - {script} ({submitted})")
+    except json.JSONDecodeError:
+        print_info("作业历史文件损坏")
+
+
+# ============================================================================
+# 命令: upload / download
+# ============================================================================
+
+def cmd_upload(args):
+    """上传文件/目录到集群"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.local:
+        die("必须指定本地路径")
+
+    if not args.remote:
+        die("必须指定远程路径")
+
+    local_path = Path(args.local)
+    if not local_path.exists():
+        die(f"本地路径不存在: {args.local}")
+
+    local_type = "目录" if local_path.is_dir() else "文件"
+    print_info(f"本地{local_type}: {args.local} ({local_path.stat().st_size} 字节)" if local_path.is_file() else f"本地{local_type}: {args.local}")
+
+    is_dir = local_path.is_dir()
+
+    executor = SlurmExecutor(config)
+    success = executor.transfer(
+        src=args.local,
+        dst=args.remote,
+        download=False,
+        recursive=is_dir or args.recursive
+    )
+
+    if not success:
+        sys.exit(1)
+
+
+def cmd_download(args):
+    """从集群下载文件/目录"""
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.remote:
+        die("必须指定远程路径")
+
+    if not args.local:
+        die("必须指定本地路径")
+
+    executor = SlurmExecutor(config)
+
+    # 检查远程文件/目录是否存在
+    remote_exists, remote_type = executor.check_remote_exists(args.remote)
+    if not remote_exists:
+        die(f"远程路径不存在: {args.remote}")
+
+    print_info(f"远程路径类型: {remote_type}")
+
+    success = executor.transfer(
+        src=args.remote,
+        dst=args.local,
+        download=True,
+        recursive=args.recursive
+    )
+
+    if not success:
+        sys.exit(1)
+
+
+def cmd_exec(args):
+    """
+    在集群上执行任意命令（统一入口，避免多次授权）
+
+    注意：此命令是核心功能，用于减少 SSH 连接的授权询问次数。
+    所有需要直接在集群上执行的操作都应通过此命令进行。
+
+    安全性：AI 模型在调用此命令前应评估命令安全性。
+    """
+    config = ConfigManager()
+    if not config.is_configured():
+        die("请先运行 init 配置")
+
+    if not args.cmd:
+        die("必须指定要执行的命令")
+
+    command = args.cmd
+
+    executor = SlurmExecutor(config)
+    output = executor.run(command)
+
+    # 输出结果
+    if output:
+        print(output)
+
+
+# ============================================================================
+# 主函数
+# ============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Slurm 集群助手 - 统一命令接口",
+        description="Slurm Cluster Assistant CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-
-    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+    subparsers = parser.add_subparsers(dest="command", help="命令")
 
     # init
     init_parser = subparsers.add_parser("init", help="初始化配置")
-    init_parser.add_argument("--mode", choices=["local", "remote"], help="运行模式")
-    init_parser.add_argument("--cluster-name", help="集群名称")
-    init_parser.add_argument("--host", help="登录节点地址")
-    init_parser.add_argument("--port", type=int, help="SSH 端口")
-    init_parser.add_argument("--username", help="用户名")
-    init_parser.add_argument("--jump-host", help="跳板机地址")
-    init_parser.add_argument("--check", action="store_true", help="仅检查配置状态")
-    init_parser.add_argument("--output-json", action="store_true", help="以 JSON 格式输出配置状态")
-    init_parser.add_argument("--project-root", help="项目根目录（自动检测）")
-    init_parser.add_argument("--save-to-project", action="store_true", help="保存配置到项目级别")
-
-    # setup-ssh
-    ssh_parser = subparsers.add_parser("setup-ssh", help="SSH 密钥配置引导")
+    init_parser.add_argument("--check", action="store_true")
+    init_parser.add_argument("--output-json", action="store_true")
+    init_parser.add_argument("--mode", choices=["local", "remote"])
+    init_parser.add_argument("--cluster-name")
+    init_parser.add_argument("--host")
+    init_parser.add_argument("--port", type=int, default=22)
+    init_parser.add_argument("--username")
+    init_parser.add_argument("--jump-host")
 
     # status
     status_parser = subparsers.add_parser("status", help="查看资源状态")
-    status_parser.add_argument("--partition", "-p", help="指定分区")
-    status_parser.add_argument("--nodes", "-n", action="store_true", help="显示节点状态")
+    status_parser.add_argument("-p", "--partition")
+    status_parser.add_argument("-n", "--nodes", action="store_true")
+    status_parser.add_argument("--gpu", action="store_true", help="显示 GPU 节点详情")
 
     # node-info
     node_parser = subparsers.add_parser("node-info", help="查看节点详情")
-    node_parser.add_argument("node", help="节点名称")
+    node_parser.add_argument("node", nargs="?")
+
+    # node-jobs
+    node_jobs_parser = subparsers.add_parser("node-jobs", help="查看节点上的作业")
+    node_jobs_parser.add_argument("node", nargs="?", help="节点名称")
+
+    # partition-info
+    partition_parser = subparsers.add_parser("partition-info", help="查看分区详细信息")
+    partition_parser.add_argument("-p", "--partition", help="指定分区")
+
+    # find-gpu
+    gpu_parser = subparsers.add_parser("find-gpu", help="查找 GPU 资源")
+    gpu_parser.add_argument("gpu_type", nargs="?", help="GPU 型号（可选，不指定则显示所有）")
 
     # alloc
     alloc_parser = subparsers.add_parser("alloc", help="申请交互式资源")
-    alloc_parser.add_argument("--partition", "-p", help="分区")
-    alloc_parser.add_argument("--gres", "-g", help="GRES (如 gpu:1)")
-    alloc_parser.add_argument("--cpus", "-c", type=int, help="CPU 核心数")
-    alloc_parser.add_argument("--nodes", "-N", type=int, help="节点数")
-    alloc_parser.add_argument("--time", "-t", help="时间限制")
-    alloc_parser.add_argument("--mem", "-m", help="内存")
-    alloc_parser.add_argument("--keep-alive", "-k", help="保活时间 (默认 24h)")
+    alloc_parser.add_argument("-p", "--partition", required=True, help="分区")
+    alloc_parser.add_argument("-g", "--gres", help="GRES 资源（如 gpu:1）")
+    alloc_parser.add_argument("-c", "--cpus", type=int, default=0, help="CPU 数量（0=自动计算）")
+    alloc_parser.add_argument("-t", "--time", default="1:00:00", help="作业时间限制")
+    alloc_parser.add_argument("--max-wait", help="最大等待时间（如 10:00 或 5 表示 5 分钟）")
 
     # release
     release_parser = subparsers.add_parser("release", help="释放资源")
-    release_parser.add_argument("alloc_id", help="资源/作业 ID")
+    release_parser.add_argument("job_id", nargs="?")
 
     # run
-    run_parser = subparsers.add_parser("run", help="运行命令")
-    run_parser.add_argument("command", help="要执行的命令")
-    run_parser.add_argument("--partition", "-p", help="分区")
-    run_parser.add_argument("--gres", "-g", help="GRES")
-    run_parser.add_argument("--cpus", "-c", type=int, help="CPU 核心数")
-    run_parser.add_argument("--nodes", "-N", type=int, help="节点数")
-    run_parser.add_argument("--time", "-t", help="时间限制")
-    run_parser.add_argument("--mem", "-m", help="内存")
-
-    # script-gen
-    script_parser = subparsers.add_parser("script-gen", help="生成作业脚本")
-    script_parser.add_argument("--name", "-n", help="作业名称")
-    script_parser.add_argument("--output", "-o", help="输出文件路径")
-    script_parser.add_argument("--partition", "-p", help="分区")
-    script_parser.add_argument("--gres", "-g", help="GRES")
-    script_parser.add_argument("--cpus", "-c", type=int, help="CPU 核心数")
-    script_parser.add_argument("--nodes", "-N", type=int, help="节点数")
-    script_parser.add_argument("--time", "-t", help="时间限制 (仅在明确指定时使用)")
-    script_parser.add_argument("--mem", "-m", help="内存 (仅在明确指定时使用)")
+    run_parser = subparsers.add_parser("run", help="srun 运行命令")
+    run_parser.add_argument("command", nargs="*")
 
     # submit
     submit_parser = subparsers.add_parser("submit", help="提交作业")
-    submit_parser.add_argument("script", help="脚本路径")
+    submit_parser.add_argument("script", nargs="?")
 
     # jobs
     jobs_parser = subparsers.add_parser("jobs", help="查看作业状态")
-    jobs_parser.add_argument("--id", help="作业 ID")
+    jobs_parser.add_argument("--id", "-i")
 
     # log
     log_parser = subparsers.add_parser("log", help="查看作业日志")
-    log_parser.add_argument("job_id", help="作业 ID")
-    log_parser.add_argument("--follow", "-f", action="store_true", help="实时跟踪")
+    log_parser.add_argument("job_id", nargs="?")
+    log_parser.add_argument("-f", "--follow", action="store_true")
 
     # cancel
     cancel_parser = subparsers.add_parser("cancel", help="取消作业")
-    cancel_parser.add_argument("job_ids", nargs="*", help="作业 ID")
-    cancel_parser.add_argument("--all", "-a", action="store_true", help="取消所有作业")
+    cancel_parser.add_argument("job_ids", nargs="*")
 
     # history
-    history_parser = subparsers.add_parser("history", help="查看作业历史")
-    history_parser.add_argument("--since", help="起始时间")
-    history_parser.add_argument("--export", help="导出到文件")
+    subparsers.add_parser("history", help="作业历史")
 
-    # refresh-cache
-    refresh_cache_parser = subparsers.add_parser("refresh-cache", help="刷新分区节点缓存")
+    # upload / download
+    upload_parser = subparsers.add_parser("upload", help="上传文件/目录")
+    upload_parser.add_argument("local", nargs="?")
+    upload_parser.add_argument("remote", nargs="?")
+    upload_parser.add_argument("-r", "--recursive", action="store_true")
 
-    # show-cache
-    show_cache_parser = subparsers.add_parser("show-cache", help="显示分区节点缓存")
+    download_parser = subparsers.add_parser("download", help="下载文件/目录")
+    download_parser.add_argument("remote", nargs="?")
+    download_parser.add_argument("local", nargs="?")
+    download_parser.add_argument("-r", "--recursive", action="store_true")
 
-    # find-gpu
-    find_gpu_parser = subparsers.add_parser("find-gpu", help="查找可用 GPU 资源")
-    find_gpu_parser.add_argument("--count", "-c", type=int, default=1, help="需要的 GPU 数量 (默认 1)")
-    find_gpu_parser.add_argument("--type", "-t", help="GPU 类型 (如 a100, v100, 3090)")
+    # exec - 在集群上执行任意命令（统一入口）
+    exec_parser = subparsers.add_parser("exec", help="在集群上执行命令（统一入口，避免多次授权）")
+    exec_parser.add_argument("-c", "--cmd", required=True, help="要执行的命令")
 
     args = parser.parse_args()
 
@@ -1611,28 +1099,24 @@ def main():
         parser.print_help()
         return
 
-    # 获取项目根目录（如果提供了）
-    project_root = getattr(args, 'project_root', None)
-    cli = SlurmCLI(project_root=project_root)
-
-    # 路由到对应命令
     cmd_map = {
-        "init": cli.cmd_init,
-        "setup-ssh": cli.cmd_setup_ssh,
-        "status": cli.cmd_status,
-        "node-info": cli.cmd_node_info,
-        "alloc": cli.cmd_alloc,
-        "release": cli.cmd_release,
-        "run": cli.cmd_run,
-        "script-gen": cli.cmd_script_gen,
-        "submit": cli.cmd_submit,
-        "jobs": cli.cmd_jobs,
-        "log": cli.cmd_log,
-        "cancel": cli.cmd_cancel,
-        "history": cli.cmd_history,
-        "refresh-cache": cli.cmd_refresh_cache,
-        "show-cache": cli.cmd_show_cache,
-        "find-gpu": cli.cmd_find_gpu,
+        "init": cmd_init,
+        "status": cmd_status,
+        "node-info": cmd_node_info,
+        "node-jobs": cmd_node_jobs,
+        "partition-info": cmd_partition_info,
+        "find-gpu": cmd_find_gpu,
+        "alloc": cmd_alloc,
+        "release": cmd_release,
+        "run": cmd_run,
+        "submit": cmd_submit,
+        "jobs": cmd_jobs,
+        "log": cmd_log,
+        "cancel": cmd_cancel,
+        "history": cmd_history,
+        "upload": cmd_upload,
+        "download": cmd_download,
+        "exec": cmd_exec,
     }
 
     if args.command in cmd_map:

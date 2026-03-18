@@ -9,152 +9,59 @@ description: |
   - 需要提交/取消/查看作业（sbatch/scancel/squeue）
   - 需要申请交互式资源（salloc）或运行命令（srun）
   - 需要生成或修改 slurm 作业脚本
+  - 需要上传/下载文件到集群
   - 询问如何使用集群、如何提交作业等新手问题
-
-  即使是简单问题也请使用此 skill，因为它包含集群特定的配置和环境检测。
 compatibility:
-  - bash
-  - uv/uvx (优先) 或 python3
+  - python3
+  - uv (可选，优先使用)
+  - ssh (远程模式需要)
+  - scp (文件传输需要)
 ---
 
 # Slurm 集群助手
 
-为高校学生/教师定制的 Slurm HPC 集群管理工具。支持本地（集群上）和远程（集群外）两种使用模式。
+跨平台 Slurm HPC 集群管理工具，支持 Windows/macOS/Linux。
 
 ---
 
-## 核心工作流程
-
-**所有操作通过 `slurm-cli.py` 统一执行，避免多次授权询问**：
-
-```
-用户请求 → slurm-cli.py init --check → [已配置?] → 执行 slurm-cli.py <command>
-                                          ↓ 否
-                                    AskUserQuestion 收集信息 → slurm-cli.py init --mode ... → 执行操作
-```
-
-### ⚠️ 减少授权询问
-
-由于每次执行的命令参数不同，可能会频繁触发授权询问。
-
-**首次使用时，询问用户是否允许脚本执行**：
-
-```json
-{
-  "questions": [
-    {
-      "question": "为减少授权询问，是否允许 slurm-cli.py 脚本自动执行？",
-      "options": [
-        "是，添加到允许列表（推荐）",
-        "否，每次手动确认"
-      ]
-    }
-  ]
-}
-```
-
-**如果用户选择"是"**：
-1. 在项目根目录创建或编辑 `.claude/settings.json`
-2. 添加以下内容：
-   ```json
-   {
-     "permissions": {
-       "allow": [
-         "Bash(python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)"
-       ]
-     }
-   }
-   ```
-3. 告知用户：已添加权限配置，后续操作将自动执行
-
-### ⚠️ 关键原则：统一使用 slurm-cli.py
-
-**禁止执行单独的 shell 命令**来检测环境或检查配置，所有操作必须通过 `slurm-cli.py` 执行：
+## 脚本路径（固定）
 
 ```bash
-# 正确：检查配置状态（一次授权）
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --check --output-json
-
-# 错误：不要执行这些单独的命令
-# cat ~/.claude/skills/slurm-assistant/config.json
-# which sinfo
-# sinfo --version
+SCRIPT=~/.claude/skills/slurm-assistant/scripts/slurm-cli.py
 ```
 
-### ⚠️ 输出格式限制
+## Python 运行命令
 
-**输出内容时避免使用 emoji 和复杂表格**，防止显示错位：
+**优先使用 uv（推荐）：**
+```bash
+uv run python "$SCRIPT" <command>
+```
 
-- 使用纯文本格式输出状态信息
-- 表格使用简单的文本对齐，不使用 `│` `├` 等特殊字符
-- 状态用文字描述而非 emoji（如用 `[RUNNING]` 而非 `🔵`）
-- 示例：
-  ```
-  作业ID     名称         状态        提交时间
-  12345     train_job   RUNNING     2024-01-15 10:30
-  12346     test_job    PENDING     2024-01-15 11:00
-  ```
-
-### 配置检查流程
-
-每次执行任何 slurm 相关操作前：
-
-1. **检查配置状态（一次命令）**
-   ```bash
-   python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --check --output-json
-   ```
-
-2. **解析 JSON 输出**：
-   - `configured`: true → 已配置，继续执行
-   - `configured`: false → 需要初始化配置
-   - `local_slurm_available`: true → 可使用本地模式
-   - `local_slurm_available`: false → 需要远程模式
-
-3. **如果未配置**：
-   - 使用 `AskUserQuestion` 收集信息（见下方）
-   - 调用 `slurm-cli.py init --mode ... --host ... --port ... --username ...` 保存配置
-   - 脚本会自动测试连接
-
-4. **配置完成后**：执行用户请求的操作
-
-### ⚠️ 重要：询问方式
-
-**必须使用 `AskUserQuestion` 工具**来收集用户信息，不要直接用文本询问。
-
-原因：
-- AskUserQuestion 提供结构化的选项和输入
-- 减少来回对话，提高效率
-- 确保收集的信息格式规范
+**无 uv 时使用：**
+```bash
+python3 "$SCRIPT" <command>
+# 或 Windows:
+python "$SCRIPT" <command>
+```
 
 ---
 
-## 环境检测与初始化
+## 首次使用流程
 
-### 步骤 1: 检查配置状态（统一命令）
+### 1. 检查配置状态
 
 ```bash
-# 一次命令获取所有状态信息
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --check --output-json
+uv run python "$SCRIPT" init --check --output-json
 ```
 
-输出示例：
+输出：
 ```json
-{
-  "configured": false,
-  "mode": null,
-  "cluster": {},
-  "local_slurm_available": false
-}
+{"configured": false, "local_slurm_available": false}
 ```
 
-### 步骤 2: 收集配置信息（使用 AskUserQuestion）
+### 2. 如果未配置，收集配置信息
 
-**必须使用 `AskUserQuestion` 工具来收集信息**，不要直接用文本询问。
-
-#### 简化的提问流程
-
-**第一步：询问使用场景（一次 AskUserQuestion）**
-
+**第一步：询问使用场景**
 ```json
 {
   "questions": [
@@ -162,7 +69,7 @@ python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --check --out
       "question": "请选择您的使用场景",
       "options": [
         "贵州大学 HPC 集群",
-        "其他 Slurm 集群",
+        "其他 Slurm 集群（远程）",
         "当前已在集群上（本地模式）"
       ]
     }
@@ -170,484 +77,491 @@ python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --check --out
 }
 ```
 
-**根据用户选择处理**：
+**第二步：根据选择继续收集**
 
-1. **选择"贵州大学 HPC 集群"**：
-   - 自动使用预设配置：host=210.40.56.85, port=21563
-   - 只需再询问用户名（可选）
-
-   ```json
-   {
-     "questions": [
-       {
-         "question": "集群用户名（当前系统用户名: $USER）",
-         "options": [
-           "使用默认用户名"
-         ]
-       }
-     ]
-   }
-   ```
-
-   **说明**：
-   - 选择"使用默认用户名"→ 使用当前系统用户名
-   - 直接在 "Other" 输入框中输入 → 使用输入的用户名
-
-2. **选择"其他 Slurm 集群"**：
-   - 需要收集：登录地址、端口、用户名
-
-   ```json
-   {
-     "questions": [
-       {
-         "question": "请输入集群登录地址（如 login.hpc.edu.cn）",
-         "options": ["在下方输入"]
-       },
-       {
-         "question": "SSH 端口",
-         "options": ["22（默认）", "自定义端口"]
-       },
-       {
-         "question": "集群用户名",
-         "options": ["使用本地用户名", "自定义用户名"]
-       }
-     ]
-   }
-   ```
-
-3. **选择"当前已在集群上"**：
-   - 直接配置为本地模式，无需额外询问
-
-### 步骤 3: 保存配置（通过 slurm-cli.py）
-
-收集完信息后，**通过 slurm-cli.py 一次性保存配置**：
-
-#### 本地模式（在集群上）
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init --mode local --cluster-name "<集群名称>"
-```
-
-#### 远程模式（集群外）
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init \
-  --mode remote \
-  --cluster-name "<集群名称>" \
-  --host "<登录地址>" \
-  --port <端口> \
-  --username "<用户名>" \
-  [--jump-host "<跳板机地址>"]
-```
-
-**贵州大学预设配置**：
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py init \
-  --mode remote \
-  --cluster-name "贵州大学" \
-  --host "210.40.56.85" \
-  --port 21563 \
-  --username "<用户名>"
-```
-
-脚本会自动：
-- 创建配置目录
-- 保存配置到 `config.json`
-- 测试 SSH 连接（远程模式）
-- 报告连接状态
-
-如果连接失败，引导用户配置 SSH 密钥（见下方 SSH 配置引导）。
-
----
-
-## SSH 密钥配置引导
-
-当用户需要配置免密登录时，可以使用 `setup-ssh` 命令进行交互式配置：
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py setup-ssh
-```
-
-该命令会自动：
-1. 检查现有 SSH 密钥
-2. 引导生成新密钥（如需要）
-3. 配置 SSH config
-4. 复制公钥到集群
-5. 测试免密登录
-
-### 手动配置（备选）
-
-如果需要手动配置，可以参考以下步骤：
-
-#### 1. 检查现有密钥
-
-```bash
-ls -la ~/.ssh/id_*
-```
-
-#### 2. 生成密钥（如不存在）
-
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-```
-
-#### 3. 复制公钥到集群
-
-```bash
-ssh-copy-id -p <port> [-J <jump_host>] <username>@<host>
-```
-
-#### 4. 配置 SSH config（可选但推荐）
-
-在 `~/.ssh/config` 中添加：
-```
-Host <集群名>
-    HostName <host>
-    User <username>
-    Port <port>
-    IdentityFile ~/.ssh/id_ed25519
-    ProxyJump <跳板机>  # 如需要
-```
-
-#### 5. 测试免密登录
-
-```bash
-ssh <集群名> "echo 免密登录成功"
-```
-
----
-
-## 命令执行接口
-
-**所有 Slurm 操作通过 `slurm-cli.py` 统一接口执行**，避免多次授权询问：
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py <command> [options]
-```
-
-### ⚠️ 减少授权询问原则
-
-1. **配置初始化**：收集完所有信息后，一次性写入配置文件（一次 bash 授权）
-2. **日常操作**：所有操作通过 `slurm-cli.py` 脚本执行，脚本内部处理 SSH 连接
-3. **避免**：不要手动执行多个 `ssh`、`sinfo`、`squeue` 等命令，而是通过脚本统一执行
-
-### 可用命令
-
-| 命令 | 功能 | 触发条件 |
-|------|------|----------|
-| `init` | 初始化配置 | 首次使用或重新配置 |
-| `setup-ssh` | SSH 密钥配置向导 | 需要配置免密登录 |
-| `status [-p 分区] [-n]` | 查看资源状态 | 用户想看集群状态 |
-| `node-info <节点>` | 查看节点详情 | 用户想看特定节点 |
-| `alloc [-p 分区] [-g gres]` | 申请交互式资源 | 用户需要交互式环境 |
-| `release <id>` | 释放资源 **(需确认)** | 用户想释放资源 |
-| `run <cmd>` | srun 运行命令 | 用户想直接运行命令 |
-| `script-gen` | 生成作业脚本 | 用户想创建脚本 |
-| `submit <脚本>` | 提交作业 | 用户想提交作业 |
-| `jobs [--id <id>]` | 查看作业状态 | 用户想查看作业 |
-| `log <job_id> [-f]` | 查看作业日志 | 用户想看日志 |
-| `cancel <ids...>` | 取消作业 **(需确认)** | 用户想取消作业 |
-| `history` | 作业历史 | 查看通过此 skill 提交的作业 |
-| `refresh-cache` | 刷新分区缓存 | 更新集群分区和节点信息缓存 |
-| `show-cache` | 显示缓存信息 | 查看缓存的分区和节点详情 |
-| `find-gpu <型号> [--数量]` | 查找 GPU 资源 | 搜索指定型号的可用 GPU 节点 |
-
----
-
-## 分区缓存功能
-
-针对常用集群（如贵州大学），系统会自动缓存集群硬件配置信息，避免反复查询。
-
-### 缓存内容
-
-**仅存储硬件配置（静态信息）**：
-- 所有可用分区列表
-- 每个分区的节点列表
-- 节点配置信息：CPU 核心数、GPU 型号和数量、内存大小
-
-**不存储动态状态**：
-- 节点状态（空闲/混合/已分配）在查询时动态获取
-
-### 缓存命令
-
-#### 刷新缓存
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py refresh-cache
-```
-
-首次使用或需要更新集群硬件配置时执行。缓存长期有效，仅在硬件变更时需要更新。
-
-#### 显示缓存
-
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py show-cache
-```
-
-查看当前缓存的集群硬件配置信息：
-- 分区名称
-- 各节点的硬件配置（CPU、GPU、内存）
-
-#### 查找 GPU
-
-```bash
-# 查找所有 A100 GPU
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py find-gpu a100
-
-# 查找 4 张 V100 GPU 的节点
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py find-gpu v100 --数量 4
-```
-
-快速查找满足特定 GPU 需求的节点，返回可用节点列表及其配置。
-
-### 缓存文件
-
-缓存存储在 `~/.claude/skills/slurm-assistant/partition_cache.json`
-
----
-
-## 功能执行流程
-
-### 1. 查看资源状态
-
-**用户说**：「查看集群状态」「有哪些分区」「GPU 分区空闲吗」
-
-**执行流程**：
-```bash
-# 检查配置 → [执行命令]
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py status [-p 分区]
-```
-
-**输出解释**：向用户解释分区的 A/I/O/T 含义（Allocated/Idle/Other/Total）
-
-### 2. 申请交互式资源
-
-**用户说**：「申请一个 GPU」「我要交互式资源」
-
-**执行流程**：
-1. 询问资源需求：
-   - 分区（如 gpu）
-   - GRES（如 gpu:1, gpu:a100:2）
-   - CPU 核心数
-   - 是否需要保活（默认 24h）
-
-2. 生成并执行 salloc 命令：
-   ```bash
-   salloc -p <分区> --gres=<gres> --cpus-per-task=<cpus> tmux new-session -d 'sleep 24h'
-   ```
-
-3. 告知用户：
-   - 分配的作业 ID
-   - 如何连接到分配的节点
-   - 如何释放资源
-
-### 3. 生成作业脚本
-
-**用户说**：「帮我写个作业脚本」「生成训练脚本」
-
-**执行流程**：
-1. 询问/确认信息：
-   - 作业名称
-   - 脚本保存路径
-   - 分区、GRES、CPU 等
-   - **不主动询问 mem 和 time**（除非用户提及）
-   - 要运行的命令
-
-2. 生成脚本，遵循原则：
-   - 日志输出到 `logs/` 目录
-   - Python 优先使用 uv
-   - 包含 `mkdir -p logs`
-   - 不指定 mem/time（除非用户要求）
-
-3. 询问保存位置并保存
-
-4. 询问是否立即提交
-
-### 4. 提交作业
-
-**用户说**：「提交作业」「sbatch 这个脚本」
-
-**执行流程**：
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py submit <脚本路径>
-```
-
-提交后：
-- 显示作业 ID
-- 记录到作业历史（`jobs.json`）
-- 告知日志路径
-
-### 5. 查看作业状态
-
-**用户说**：「我的作业」「作业状态」
-
-**执行流程**：
-```bash
-python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py jobs [--id <job_id>]
-```
-
-同时显示：
-- squeue 输出（当前队列）
-- 此 skill 记录的作业历史
-
-### 6. 查看作业日志
-
-**用户说**：「看日志」「作业输出」
-
-**执行流程**：
-1. 从作业历史中查找日志路径
-2. 如果找不到，使用默认路径 `logs/<job_id>.out`
-3. 显示日志内容：
-   ```bash
-   python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py log <job_id> [-f]
-   ```
-
-### 7. 取消作业（危险操作）
-
-**用户说**：「取消作业」「kill 那个任务」
-
-**执行流程**：
-1. **确认对话框**（必须）：
-   ```
-   ⚠️  危险操作：即将取消作业 12345
-       作业名称：training_job
-       状态：RUNNING
-       提交时间：2024-01-15T10:30:00
-
-   确认执行？[y/N]
-   ```
-
-2. 用户确认后执行：
-   ```bash
-   scancel <job_id>
-   ```
-
-3. 更新作业历史状态
-
----
-
-## 危险操作确认原则
-
-以下操作**必须**向用户确认：
-
-- `cancel` - 取消作业
-- `release` - 释放资源
-- 任何包含 `rm` 的命令
-- 任何包含 `kill` 的命令
-- `scancel` 相关操作
-- 批量操作（`--all`）
-
-**确认格式**：
-```
-⚠️  危险操作：<操作描述>
-    <详细信息>
-
-确认执行？[y/N]
-```
-
----
-
-## Python 环境策略
-
-**优先级**：`uv/uvx` > `conda` > `module load`
-
-### 在作业脚本中使用
-
-```bash
-# 方式 1: uv run（项目环境，推荐）
-uv run python train.py
-
-# 方式 2: uvx（单文件脚本）
-uvx --with numpy --with pandas python script.py
-
-# 方式 3: conda（如果用户已有环境）
-source ~/.bashrc && conda activate my_env
-
-# 方式 4: module（集群提供）
-module load python/3.9
-```
-
----
-
-## 作业记录管理
-
-作业记录存储在 `~/.claude/skills/slurm-assistant/jobs.json`：
-
+**A. 贵州大学 HPC 集群**
 ```json
 {
-  "jobs": [
+  "questions": [
     {
-      "job_id": "12345",
-      "name": "training_job",
-      "script": "/home/user/project/train.sh",
-      "submitted_at": "2024-01-15T10:30:00",
-      "status": "RUNNING",
-      "output_file": "logs/train_12345.out",
-      "error_file": "logs/train_12345.err"
+      "question": "请输入您的贵州大学 HPC 集群用户名",
+      "options": ["输入用户名"]
+    },
+    {
+      "question": "是否已配置免密登录？",
+      "options": ["已配置", "未配置，需要帮助"]
+    }
+  ]
+}
+```
+如未配置免密登录，参考 `references/set_free_password.md`
+
+**B. 其他 Slurm 集群（远程）**
+```json
+{
+  "questions": [
+    {
+      "question": "请输入集群名称（如：xx大学超算）",
+      "options": ["输入集群名称"]
+    },
+    {
+      "question": "请输入集群登录节点地址",
+      "options": ["输入地址（如 login.hpc.edu）"]
+    },
+    {
+      "question": "请输入 SSH 端口",
+      "options": ["22（默认）", "其他端口"]
+    },
+    {
+      "question": "请输入您的用户名",
+      "options": ["输入用户名"]
+    },
+    {
+      "question": "是否需要通过跳板机连接？",
+      "options": ["不需要", "需要"]
+    },
+    {
+      "question": "是否已配置免密登录？",
+      "options": ["已配置", "未配置，需要帮助"]
+    }
+  ]
+}
+```
+如未配置免密登录，参考 `references/set_free_password.md`
+
+**C. 当前已在集群上（本地模式）**
+```json
+{
+  "questions": [
+    {
+      "question": "请为这个集群命名（用于标识）",
+      "options": ["使用默认名称（local）", "输入自定义名称"]
     }
   ]
 }
 ```
 
-每次提交作业时自动记录，用于后续日志查看和状态追踪。
+### 3. 保存配置
+
+```bash
+# 贵州大学 HPC
+uv run python "$SCRIPT" init --mode remote \
+  --cluster-name "贵州大学 HPC" \
+  --host 210.40.56.85 \
+  --port 21563 \
+  --username "用户输入的用户名"
+
+# 其他集群
+uv run python "$SCRIPT" init --mode remote \
+  --cluster-name "用户输入的名称" \
+  --host "用户输入的地址" \
+  --port 用户输入的端口 \
+  --username "用户输入的用户名" \
+  --jump-host "跳板机地址（如有）"
+
+# 本地模式
+uv run python "$SCRIPT" init --mode local --cluster-name "用户输入的名称"
+```
 
 ---
 
-## 项目级别安装
+## 命令速查
 
-### 安装方式
+### 集群状态（重点关注 GPU）
 
-Skill 支持两种安装方式：
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| status | `uv run python "$SCRIPT" status [--gpu] [-p 分区]` | 查看资源状态，`--gpu` 显示 GPU 详情 |
+| partition-info | `uv run python "$SCRIPT" partition-info [-p 分区]` | 分区详情（一次调用获取所有节点） |
+| node-info | `uv run python "$SCRIPT" node-info <节点>` | 查看节点详情 |
+| node-jobs | `uv run python "$SCRIPT" node-jobs <节点>` | 查看节点上的作业（运行中/排队中） |
+| find-gpu | `uv run python "$SCRIPT" find-gpu [型号]` | 查找 GPU 资源（不指定型号显示所有） |
 
-#### 1. 全局安装（默认）
+### 作业管理
 
-将 skill 文件复制到 `~/.claude/skills/slurm-assistant/`，所有项目共享同一配置。
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| alloc | `uv run python "$SCRIPT" alloc -p <分区> [-g gres] [-c cpus] [--max-wait 时间]` | 申请交互式资源，CPU 自动计算 |
+| release | `uv run python "$SCRIPT" release <id>` | 释放资源 |
+| run | `uv run python "$SCRIPT" run <命令>` | srun 运行命令 |
+| submit | `uv run python "$SCRIPT" submit <脚本>` | 提交作业 |
+| jobs | `uv run python "$SCRIPT" jobs [--id <id>]` | 查看作业状态 |
+| log | `uv run python "$SCRIPT" log <job_id> [-f]` | 查看作业日志 |
+| cancel | `uv run python "$SCRIPT" cancel <ids...>` | 取消作业 |
+| history | `uv run python "$SCRIPT" history` | 作业历史 |
 
+### 文件传输
+
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| upload | `uv run python "$SCRIPT" upload <本地> <远程> [-r]` | 上传文件/目录（自动检查本地文件） |
+| download | `uv run python "$SCRIPT" download <远程> <本地> [-r]` | 下载文件/目录（自动检查远程文件） |
+
+**注意：**
+- `upload` 会检查本地文件是否存在，显示文件大小/类型
+- `download` 会先检查远程文件是否存在，不存在则报错
+
+### 远程命令（核心功能）
+
+| 命令 | 用法 | 说明 |
+|------|------|------|
+| exec | `uv run python "$SCRIPT" exec -c <命令>` | 在集群上执行命令（统一入口，**必须掌握**） |
+
+**重要提示：**
+- `exec` 是核心命令，用于减少授权询问次数
+- 所有需要直接在集群上执行的命令都应通过 `exec` 进行
+- **AI 模型必须在调用 `exec` 命令前进行安全评估**
+- 危险命令包括但不限于：
+  - 删除操作：`rm -rf`、`rmdir` 等
+  - 破坏性操作：`dd`、`mkfs`、格式化等
+  - 系统影响：`kill -9 -1`、`shutdown`、`reboot` 等
+  - 权限修改：`chmod 000`、`chown` 等
+- **对于危险命令，AI 必须使用 `AskUserQuestion` 工具请求用户确认**，告知可能的后果
+- 安全命令示例：`ls`、`cat`、`grep`、`squeue`、`sinfo`、`head`、`tail` 等
+
+---
+
+## GPU 查询示例
+
+```bash
+# 查看所有 GPU 节点状态（推荐）
+uv run python "$SCRIPT" status --gpu
+
+# 查看特定分区
+uv run python "$SCRIPT" status --gpu -p gpu
+
+# 查找特定型号
+uv run python "$SCRIPT" find-gpu a100
+
+# 查看分区所有节点（一次调用）
+uv run python "$SCRIPT" partition-info -p gpu
+
+# 查看节点上的作业
+uv run python "$SCRIPT" node-jobs gpu-node01
+```
+
+---
+
+## 资源申请示例
+
+```bash
+# 申请 GPU 节点（CPU 自动计算）
+uv run python "$SCRIPT" alloc -p gpu -g gpu:1
+
+# 申请 GPU 节点（指定 CPU 数量）
+uv run python "$SCRIPT" alloc -p gpu -g gpu:1 -c 8
+
+# 申请 GPU 节点（设置最大等待时间 5 分钟）
+uv run python "$SCRIPT" alloc -p gpu -g gpu:1 --max-wait 5
+```
+
+---
+
+## 远程命令示例（exec - 核心命令）
+
+```bash
+# 查看文件列表（安全命令，直接执行）
+uv run python "$SCRIPT" exec -c ls -lh
+
+# 查看文件内容
+uv run python "$SCRIPT" exec -c cat slurm-12345.out
+
+# 搜索作业日志（使用单引号包围复杂命令）
+uv run python "$SCRIPT" exec -c 'grep ERROR slurm-*.out'
+
+# 查看磁盘使用
+uv run python "$SCRIPT" exec -c 'du -sh ~/workspace'
+```
+
+**危险命令处理流程（AI 必须遵循）：**
+
+当用户请求执行危险命令时，AI 必须使用 `AskUserQuestion` 工具请求确认：
+
+```json
+{
+  "questions": [
+    {
+      "question": "即将执行危险命令：rm -rf /tmp/test，这将永久删除该目录及其内容。是否继续？",
+      "options": [
+        "继续执行",
+        "取消操作"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### 贵州大学 HPC 特有功能：公共资源检查
+
+**重要：当用户请求下载数据集或安装软件时，AI 必须先检查 `/home/share/Official/` 公共目录！**
+
+许多常用的数据集、模型、软件工具可能已经在公共目录中存在。重复下载会：
+- 浪费存储空间和带宽
+- 增加等待时间
+- 可能违反集群使用规定
+
+**AI 处理流程：**
+
+1. **识别场景**：当用户提到以下关键词时触发检查：
+   - "下载 dataset"、"下载数据集"、"download dataset"
+   - "安装软件"、"install"、"下载模型"
+   - 具体的数据集名称（如 ImageNet、COCO、LLaMA 等）
+
+2. **执行检查**：
+```bash
+uv run python "$SCRIPT" exec -c 'ls -lh /home/share/Official/'
+```
+
+3. **搜索相关资源**（如果有具体名称）：
+```bash
+uv run python "$SCRIPT" exec -c 'find /home/share/Official/ -iname "*关键字*" 2>/dev/null | head -20'
+```
+
+4. **处理结果**：
+   - **找到资源**：告知用户可以直接使用，提供软链接命令
+   - **未找到**：继续执行用户的下载/安装请求
+
+**示例对话：**
+
+用户："帮我下载 ImageNet 数据集"
+
+AI 应该：
+1. 先检查：`uv run python "$SCRIPT" exec -c 'find /home/share/Official/ -iname "*imagenet*" 2>/dev/null'`
+2. 如果找到：告知用户 "公共目录已有 ImageNet，无需下载，可以使用软链接直接使用"
+3. 如果未找到：才执行下载操作
+
+---
+
+---
+
+## 减少授权询问（重要）
+
+使用 `exec` 命令可以显著减少授权询问次数。建议将以下权限规则添加到允许列表：
+
+**推荐配置（包含 exec 命令）：**
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)"
+    ]
+  }
+}
+```
+
+首次使用时询问：
+```json
+{
+  "questions": [
+    {
+      "question": "为减少授权询问，是否允许 slurm-cli.py 自动执行？",
+      "options": ["是，添加到允许列表", "否，每次确认"]
+    }
+  ]
+}
+```
+
+**选择"是"时，添加到 `~/.claude/settings.json`:**
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)"
+    ]
+  }
+}
+```
+
+---
+
+## 安装
 ```bash
 cp -r slurm-assistant ~/.claude/skills/
 ```
 
-#### 2. 项目级别安装
+---
 
-将 skill 文件复制到项目的 `.claude/skills/` 目录下，配置随项目分发。
+## 输出要求
+- 不使用 emoji
+- 状态用文字（如 `[RUNNING]`）
+- 表格简单对齐
 
-```bash
-cp -r slurm-assistant .claude/skills/
+**GPU 节点信息（重要）：**
+输出 GPU 节点状态时，必须明确说明：
+- 该节点有几张 GPU 显卡是空闲的
+- 该节点空闲几个 CPU
+
+示例输出：
+```
+节点                 分区          GPU 空闲/总数    CPU 空闲/总数    GPU型号
+------------------------------------------------------------------------------------------
+gpu-node01          gpu          2/4              8/32             A100
+gpu-node02          gpu          0/4              32/32            A100
+gpu-node03          gpu          1/2              16/24            V100
 ```
 
-### 配置优先级
+---
 
-当同时存在项目配置和全局配置时，合并策略如下：
-- 项目配置覆盖全局配置的同名设置
-- 全局配置作为项目配置的默认值补充
+## 生成作业脚本（重要流程）
 
-配置文件位置：
-- 项目配置：`<project>/.claude/skills/slurm-assistant/config.json`
-- 全局配置：`~/.claude/skills/slurm-assistant/config.json`
+当用户请求生成作业脚本时，AI 必须按照以下流程进行：
 
-### 使用场景
+### 第一步：收集基本信息
 
-| 场景 | 推荐方式 |
-|------|----------|
-| 个人使用单一集群 | 全局安装 |
-| 团队协作，共享项目配置 | 项目级别安装 |
-| 多集群环境，不同项目用不同集群 | 项目级别安装 |
-| 项目需要特定集群配置（如默认分区） | 项目级别安装 |
+使用 `AskUserQuestion` 工具收集以下信息：
 
-### 保存配置到项目级别
+```json
+{
+  "questions": [
+    {
+      "question": "请选择作业分区",
+      "options": ["cpu", "gpu-a100", "gpu-v100", "其他（请说明）"]
+    },
+    {
+      "question": "需要 GPU 资源吗？",
+      "options": ["不需要", "需要 (1卡)", "需要 (多卡，请说明数量)"]
+    },
+    {
+      "question": "预计运行时间？",
+      "options": ["1小时", "4小时", "24小时", "其他（请说明）"]
+    }
+  ]
+}
+```
 
-在初始化时使用 `--save-to-project` 参数：
+### 第二步：询问虚拟环境配置（必须）
+
+**这是关键步骤！** 必须询问用户需要使用哪种虚拟环境：
+
+```json
+{
+  "questions": [
+    {
+      "question": "请选择 Python 环境管理方式",
+      "options": [
+        "uv（推荐，快速现代）",
+        "conda（传统方式）",
+        "conda + uv（conda 管理 CUDA，uv 管理 Python 包）",
+        "不需要（使用系统 Python）"
+      ]
+    }
+  ]
+}
+```
+
+### 第三步：根据回答生成激活语句
+
+根据用户选择，在作业脚本中添加相应的激活语句：
+
+| 用户选择 | 激活语句 |
+|---------|---------|
+| **uv（推荐）** | `# 使用 uv run，无需激活<br>uv run python your_script.py` |
+| **conda** | `source ~/.bashrc<br>conda activate your_env_name` |
+| **conda + uv** | `# 先激活 conda（获取 CUDA）<br>source ~/.bashrc<br>conda activate base<br># 使用 uv 运行（获取 Python 包）<br>uv run python your_script.py` |
+| **不需要** | `# 使用系统 Python<br>module load python/3.9<br>python your_script.py` |
+
+### 第四步：生成完整脚本
+
+结合收集的信息，生成完整的作业脚本。
+
+**示例：用户选择 uv + GPU**
 
 ```bash
-python3 .claude/skills/slurm-assistant/scripts/slurm-cli.py init --mode remote --host ... --save-to-project
+#!/bin/bash
+#SBATCH --job-name=training
+#SBATCH --partition=gpu-a100
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=4:00:00
+#SBATCH --output=logs/%j.out
+#SBATCH --error=logs/%j.err
+
+cd $SLURM_SUBMIT_DIR
+
+# 创建日志目录
+mkdir -p logs
+
+# 显示作业信息
+echo "Job ID: $SLURM_JOB_ID"
+echo "Node: $(hostname)"
+echo "GPUs: $CUDA_VISIBLE_DEVICES"
+
+# 显示 GPU 信息
+nvidia-smi
+
+# 运行训练（uv 方式，无需激活虚拟环境）
+uv run python train.py --config config.yaml --epochs 100
+
+echo "Job completed at: $(date)"
+```
+
+**示例：用户选择 conda + uv**
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=training
+#SBATCH --partition=gpu-a100
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --time=4:00:00
+#SBATCH --output=logs/%j.out
+#SBATCH --error=logs/%j.err
+
+cd $SLURM_SUBMIT_DIR
+
+# 创建日志目录
+mkdir -p logs
+
+# 显示作业信息
+echo "Job ID: $SLURM_JOB_ID"
+
+# 激活 conda 环境（获取 CUDA 支持）
+source ~/.bashrc
+conda activate cuda_env
+
+# 使用 uv 运行（管理 Python 包）
+uv run python train.py --config config.yaml
+
+echo "Job completed at: $(date)"
+```
+
+### 第五步：提交作业
+
+生成脚本后，询问用户是否立即提交：
+
+```json
+{
+  "questions": [
+    {
+      "question": "脚本已生成，是否立即提交作业？",
+      "options": ["立即提交", "先查看脚本内容", "稍后手动提交"]
+    }
+  ]
+}
+```
+
+如果用户选择立即提交，执行：
+```bash
+uv run python "$SCRIPT" submit script.sh
+```
+
+---
+
+## Python 环境策略（作业脚本）
+```bash
+# 优先级：uv > conda > module
+uv run python train.py
 ```
 
 ---
 
 ## 参考资源
-
-按需读取以下参考文件：
-- `references/job_templates.md` - 作业脚本模板（GPU、多节点、数组作业等）
-- `references/common_errors.md` - 常见错误及解决方案
-
-当用户需要特定模板或遇到错误时，读取对应参考文件。
+- `references/job_templates.md` - 作业脚本模板
+- `references/common_errors.md` - 常见错误
+- `references/set_free_password.md` - 免密登录配置
