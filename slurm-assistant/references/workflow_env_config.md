@@ -315,6 +315,20 @@ echo "配置完成！请运行 'source ~/.bashrc' 使配置生效。"
 
 ### uv 缺失
 
+使用 `AskUserQuestion` 询问用户：
+
+```json
+{
+  "questions": [
+    {
+      "question": "检测到未安装 uv，是否安装？",
+      "options": ["安装 uv（推荐）", "使用 pip 代替"]
+    }
+  ]
+}
+```
+
+**安装 uv：**
 ```bash
 # 官方安装脚本（推荐）
 uv run python "$SCRIPT" exec -c "curl -LsSf https://astral.sh/uv/install.sh | sh"
