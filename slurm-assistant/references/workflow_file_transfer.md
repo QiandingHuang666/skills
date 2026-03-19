@@ -22,7 +22,18 @@ ls -lh <本地路径>
 uv run python "$SCRIPT" exec -c "ls -lh <远程路径>"
 ```
 
-如果文件/目录不存在，必须告知用户并询问是否继续。
+如果文件/目录不存在，必须使用 `AskUserQuestion` 询问用户：
+
+```json
+{
+  "questions": [
+    {
+      "question": "文件 <路径> 不存在，是否继续？",
+      "options": ["继续操作", "取消操作"]
+    }
+  ]
+}
+```
 
 ---
 
