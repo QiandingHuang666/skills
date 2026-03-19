@@ -57,3 +57,7 @@ uv run python "$SCRIPT" init --mode remote \
 ```
 
 **注意：这是唯一的 slurm-cli.py 命令调用，不需要其他 shell 命令！**
+
+## 相关文档
+
+- 公共资源检查：`gzu_public_resources.md`
