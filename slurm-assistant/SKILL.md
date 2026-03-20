@@ -4,18 +4,14 @@ description: |
   Slurm HPC 集群助手，为高校学生/教师定制。支持本地（集群上）和远程（集群外）两种使用模式。
 
   TRIGGER 当用户：
-  - 提到 slurm、hpc、集群、超算、计算节点、作业调度
-  - 想要查看分区/节点状态、队列情况
-  - 需要提交/取消/查看作业（sbatch/scancel/squeue）
+  - 提到 slurm、sbatch、squeue、scancel、salloc、srun、sinfo 等 Slurm 命令
+  - 提到 hpc 集群、slurm 集群、超算、计算节点、作业调度系统
+  - 想要查看分区/节点状态、队列情况、GPU 可用性
+  - 需要提交/取消/查看作业（使用 squeue/sbatch/scancel 等术语）
   - 需要申请交互式资源（salloc）或运行命令（srun）
   - 需要生成或修改 slurm 作业脚本
-  - 需要上传/下载文件到集群
-  - 询问如何使用集群、如何提交作业等新手问题
-compatibility:
-  - python3
-  - uv (可选，优先使用)
-  - ssh (远程模式需要)
-  - scp (文件传输需要)
+  - 需要上传/下载文件到 HPC 集群
+  - 询问如何使用 HPC 集群、如何提交作业等新手问题
 ---
 
 # Slurm 集群助手
@@ -31,8 +27,11 @@ compatibility:
 ### 检查命令
 
 ```bash
-uv run python "$SCRIPT" init --check --output-json
+uv run python "$SCRIPT" init --check --output-json [--fast]
 ```
+
+**参数说明：**
+- `--fast`: 快速模式，跳过 SSH 连接测试（加速初始化）
 
 ### 检查结果说明
 
@@ -117,23 +116,23 @@ python "$SCRIPT" <command>
 
 ### 集群本地执行模式
 
-当用户已在集群节点上（本地模式）时，参见 `workflow_local_execution.md` 了解执行规范和流程要求。
+当用户已在集群节点上（本地模式）时，参见 `references/workflow_local_execution.md` 了解执行规范和流程要求。
 
 ---
 ## 命令速查
 
 | 类别 | 命令 | 说明 | 详细 |
 |------|------|------|------|
-| 状态 | status | 查看资源状态（`--gpu` 显示 GPU） | `commands.md` |
-| 状态 | partition-info | 分区详情 | `commands.md` |
-| 状态 | find-gpu | 查找 GPU 资源 | `commands.md` |
-| 作业 | alloc | 申请交互式资源 | `commands.md` |
-| 作业 | submit | 提交作业 | `commands.md` |
-| 作业 | jobs | 查看作业状态 | `commands.md` |
-| 作业 | cancel | 取消作业 | `commands.md` |
-| 文件 | upload | 上传文件/目录 | `commands.md` |
-| 文件 | download | 下载文件/目录 | `commands.md` |
-| **核心** | **exec** | **执行远程命令（统一入口）** | `commands.md` |
+| 状态 | status | 查看资源状态（`--gpu` 显示 GPU） | `references/commands.md` |
+| 状态 | partition-info | 分区详情 | `references/commands.md` |
+| 状态 | find-gpu | 查找 GPU 资源 | `references/commands.md` |
+| 作业 | alloc | 申请交互式资源 | `references/commands.md` |
+| 作业 | submit | 提交作业 | `references/commands.md` |
+| 作业 | jobs | 查看作业状态 | `references/commands.md` |
+| 作业 | cancel | 取消作业 | `references/commands.md` |
+| 文件 | upload | 上传文件/目录 | `references/commands.md` |
+| 文件 | download | 下载文件/目录 | `references/commands.md` |
+| **核心** | **exec** | **执行远程命令（统一入口）** | `references/commands.md` |
 
 ---
 
@@ -158,12 +157,12 @@ uv run python "$SCRIPT" exec -c <命令>
 
 | 流程 | 说明 | 详细 |
 |------|------|------|
-| 首次使用 | 配置检查、场景选择 | `workflow_init.md` |
-| 环境配置 | conda + uv 配置开发环境 | `workflow_env_config.md` |
-| 提交作业/生成作业脚本 | 收集信息、选择环境、生成脚本 | `workflow_job.md` |
-| GPU 查询 | 查找可用 GPU 资源 | `commands.md` |
-| 文件上传/下载 | 上传/下载文件到集群 | `workflow_file_transfer.md` |
-| 用户作业与资源状况 | 查看作业状态、队列情况、节点状态 | `workflow_status.md` |
+| 首次使用 | 配置检查、场景选择 | `references/workflow_init.md` |
+| 环境配置 | conda + uv 配置开发环境 | `references/workflow_env_config.md` |
+| 提交作业/生成作业脚本 | 收集信息、选择环境、生成脚本 | `references/workflow_job.md` |
+| GPU 查询 | 查找可用 GPU 资源 | `references/commands.md` |
+| 文件上传/下载 | 上传/下载文件到集群 | `references/workflow_file_transfer.md` |
+| 用户作业与资源状况 | 查看作业状态、队列情况、节点状态 | `references/workflow_status.md` |
 
 ### 贵州大学 HPC 特有功能
 
@@ -171,7 +170,7 @@ uv run python "$SCRIPT" exec -c <命令>
 
 | 功能 | 说明 | 详细 |
 |------|------|------|
-| 公共资源检查 | 下载前检查 `/home/share/Official/` 公共目录 | `gzu_public_resources.md` |
+| 公共资源检查 | 下载前检查 `/home/share/Official/` 公共目录 | `references/gzu_public_resources.md` |
 
 **重要：** 贵州大学用户在下载数据集或安装软件前，AI 必须先引导用户检查公共资源，避免重复下载。
 
@@ -187,9 +186,9 @@ uv run python "$SCRIPT" exec -c <命令>
 ```
 节点                 分区          GPU 空闲/总数    CPU 空闲/总数    GPU型号
 ------------------------------------------------------------------------------------------
-gpu-node01          gpu          2/4              8/32             A100
-gpu-node02          gpu          0/4              32/32            A100
-gpu-node03          gpu          1/2              16/24            V100
+gpu-node01          gpu          2/4             8/32            A100
+gpu-node02          gpu          0/4             32/32           A100
+gpu-node03          gpu          1/2             16/24           V100
 ```
 
 输出 GPU 节点状态时，必须明确说明：
@@ -247,17 +246,17 @@ cp -r slurm-assistant ~/.claude/skills/
 
 | 文件 | 说明 |
 |------|------|
-| `commands.md` | 完整命令参考、用法、示例 |
-| `workflow_init.md` | 首次使用流程（配置检查、场景选择） |
-| `workflow_env_config.md` | 环境配置流程（conda + uv） |
-| `workflow_job.md` | 生成作业脚本流程 |
-| `workflow_file_transfer.md` | 文件上传/下载流程 |
-| `workflow_status.md` | 用户作业与资源状况查询 |
-| `workflow_local_execution.md` | 集群本地执行模式规范 |
-| `job_templates.md` | 作业脚本模板 |
-| `common_errors.md` | 常见错误 |
-| `set_free_password.md` | 免密登录配置 |
-| `use_gzu.md` | 贵州大学 HPC 配置 |
-| `gzu_public_resources.md` | 贵州大学公共资源检查 |
-| `use_other.md` | 其他集群配置 |
-| `use_local.md` | 本地模式使用 |
+| `references/commands.md` | 完整命令参考、用法、示例 |
+| `references/workflow_init.md` | 首次使用流程（配置检查、场景选择） |
+| `references/workflow_env_config.md` | 环境配置流程（conda + uv） |
+| `references/workflow_job.md` | 生成作业脚本流程 |
+| `references/workflow_file_transfer.md` | 文件上传/下载流程 |
+| `references/workflow_status.md` | 用户作业与资源状况查询 |
+| `references/workflow_local_execution.md` | 集群本地执行模式规范 |
+| `references/job_templates.md` | 作业脚本模板 |
+| `references/common_errors.md` | 常见错误 |
+| `references/set_free_password.md` | 免密登录配置 |
+| `references/use_gzu.md` | 贵州大学 HPC 配置 |
+| `references/gzu_public_resources.md` | 贵州大学公共资源检查 |
+| `references/use_other.md` | 其他集群配置 |
+| `references/use_local.md` | 本地模式使用 |

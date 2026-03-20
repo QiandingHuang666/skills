@@ -164,7 +164,7 @@ uv run python "$SCRIPT" log 12345
 which sinfo
 
 # 方法 2：使用脚本检查
-uv run python "$SCRIPT" init --check --output-json
+uv run python "$SCRIPT" init --check --output-json --fast
 # 输出: {"configured": false, "local_slurm_available": true}
 ```
 

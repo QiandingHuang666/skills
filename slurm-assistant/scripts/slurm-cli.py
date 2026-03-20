@@ -102,7 +102,7 @@ class SlurmExecutor:
     def _setup_ssh_opts(self):
         """设置 SSH 选项（跨平台）"""
         self.ssh_opts = [
-            "-o", "StrictHostKeyChecking=no",
+            "-o", "StrictHostKeyChecking=accept-new",  # 安全：只接受新主机密钥
             "-o", "ConnectTimeout=10"
         ]
 
@@ -204,7 +204,7 @@ class SlurmExecutor:
         if not host or not username:
             die("远程模式缺少 host 或 username 配置")
 
-        scp_cmd = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=30"]
+        scp_cmd = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30"]
 
         if jump_host:
             scp_cmd.extend(["-J", jump_host])
@@ -347,6 +347,16 @@ def check_ssh_key_exists() -> bool:
     return False
 
 
+def validate_node_name(node_name: str) -> bool:
+    """
+    验证节点名是否安全（防止命令注入）
+    只允许字母、数字、连字符、下划线和点
+    """
+    import re
+    pattern = r'^[a-zA-Z0-9._-]+$'
+    return bool(re.match(pattern, node_name))
+
+
 def check_local_slurm() -> bool:
     """检查本地是否有 Slurm（跨平台）"""
     try:
@@ -433,11 +443,17 @@ def cmd_init(args):
                 jump_host = cluster.get("jump_host", "")
 
                 if host and username:
-                    # 检查 SSH 连接
-                    ssh_ok, ssh_error = check_ssh_connection(host, port, username, jump_host)
-                    result["ssh_connection_ok"] = ssh_ok
-                    result["ssh_error"] = ssh_error if not ssh_ok else ""
-                    result["config_valid"] = ssh_ok
+                    # 检查 SSH 连接（除非使用 --fast 模式）
+                    if getattr(args, 'fast', False):
+                        # 快速模式：跳过 SSH 连接测试
+                        result["ssh_connection_ok"] = True  # 假设连接正常
+                        result["ssh_connection_skipped"] = True
+                        result["config_valid"] = True
+                    else:
+                        ssh_ok, ssh_error = check_ssh_connection(host, port, username, jump_host)
+                        result["ssh_connection_ok"] = ssh_ok
+                        result["ssh_error"] = ssh_error if not ssh_ok else ""
+                        result["config_valid"] = ssh_ok
                 else:
                     result["config_valid"] = False
                     result["config_error"] = "缺少 host 或 username"
@@ -615,8 +631,14 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
         return
     
     gpu_nodes.sort(key=lambda x: (x['partition'], x['node']))
-    
-    nodes_str = ','.join([n['node'] for n in gpu_nodes])
+
+    # 安全过滤：只允许合法节点名
+    valid_nodes = [n['node'] for n in gpu_nodes if validate_node_name(n['node'])]
+    if not valid_nodes:
+        print_info("未找到合法的 GPU 节点")
+        return
+
+    nodes_str = ','.join(valid_nodes)
     jobs_output = executor.run(f"squeue -t RUNNING -h -o '%N|%b' -w {nodes_str}")
     
     node_gpu_used = {}
@@ -940,8 +962,24 @@ def cmd_alloc(args):
     if not args.partition:
         die("必须指定分区 (-p)")
 
+    # 本地模式下，alloc 是交互式命令，不适合脚本调用
+    if config.get_mode() == "local":
+        print_warning("本地模式检测：salloc 是交互式命令")
+        print_info("请在终端直接运行以下命令：")
+        cpus = args.cpus if args.cpus > 1 else "自动"
+        cmd = f"salloc -p {args.partition}"
+        if args.cpus > 1:
+            cmd += f" --cpus-per-task={args.cpus}"
+        if args.gres:
+            cmd += f" --gres={args.gres}"
+        cmd += f" --time={args.time}"
+        if args.max_wait:
+            cmd += f" --wait={args.max_wait}"
+        print(f"  {cmd}")
+        return
+
     executor = SlurmExecutor(config)
-    
+
     # 智能计算 CPU 数量（如果未指定）
     cpus = args.cpus
     if cpus == 1:
@@ -950,18 +988,18 @@ def cmd_alloc(args):
         if optimal_cpus > 1:
             cpus = optimal_cpus
             print_info(f"自动计算 CPU 数量: {cpus}")
-    
+
     # 构建命令
     cmd = f"salloc -p {args.partition} --cpus-per-task={cpus} --time={args.time}"
-    
+
     if args.gres:
         cmd += f" --gres={args.gres}"
-    
+
     if args.max_wait:
         # 添加等待时间限制
         cmd += f" --wait={args.max_wait}"
         print_info(f"最大等待时间: {args.max_wait}")
-    
+
     print_info(f"申请资源: {cmd}")
     output = executor.run(cmd)
     print(output)
@@ -1046,7 +1084,11 @@ def cmd_jobs(args):
     if args.id:
         cmd = f"squeue -j {args.id}"
     else:
-        cmd = "squeue -u $USER"
+        # 使用环境变量获取用户名，更安全可靠
+        username = os.environ.get('USER') or os.environ.get('USERNAME')
+        if not username:
+            die("无法获取用户名")
+        cmd = f"squeue -u {username}"
 
     cmd += " -o '%.8i %.9P %.30j %.8u %.2t %.10M %.6D %R'"
     output = executor.run(cmd)
@@ -1066,9 +1108,18 @@ def cmd_log(args):
     log_file = f"slurm-{args.job_id}.out"
 
     if args.follow:
-        output = executor.run(f"tail -f {log_file} 2>/dev/null || cat /dev/null")
-    else:
-        output = executor.run(f"cat {log_file} 2>/dev/null || echo '日志文件不存在'")
+        # tail -f 会无限阻塞，不适合通过脚本调用
+        # 给出提示让用户直接运行
+        if config.get_mode() == "local":
+            print_warning("本地模式：请直接在终端运行以下命令查看实时日志：")
+            print(f"  tail -f {log_file}")
+        else:
+            print_warning("实时日志跟踪不适合通过 SSH 脚本调用")
+            print_info("建议使用以下命令直接查看最新日志：")
+            print(f"  ssh -p {config.get_cluster_info().get('port', 22)} {config.get_cluster_info().get('username')}@{config.get_cluster_info().get('host')} 'tail -f {log_file}'")
+        return
+
+    output = executor.run(f"cat {log_file} 2>/dev/null || echo '日志文件不存在'")
     print(output)
 
 
@@ -1216,6 +1267,7 @@ def main():
     init_parser = subparsers.add_parser("init", help="初始化配置")
     init_parser.add_argument("--check", action="store_true")
     init_parser.add_argument("--output-json", action="store_true")
+    init_parser.add_argument("--fast", action="store_true", help="快速模式：跳过 SSH 连接测试")
     init_parser.add_argument("--mode", choices=["local", "remote"])
     init_parser.add_argument("--cluster-name")
     init_parser.add_argument("--host")

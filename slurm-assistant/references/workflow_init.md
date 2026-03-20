@@ -7,8 +7,15 @@ slurm-assistant 首次使用的配置和初始化流程。
 ## 1. 检查配置状态
 
 ```bash
+# 完整检查（包含 SSH 连接测试，较慢）
 uv run python "$SCRIPT" init --check --output-json
+
+# 快速检查（跳过 SSH 连接测试，推荐）
+uv run python "$SCRIPT" init --check --output-json --fast
 ```
+
+**参数说明：**
+- `--fast`: 快速模式，跳过 SSH 连接测试，适合频繁检查
 
 **输出示例：**
 ```json
