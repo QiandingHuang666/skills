@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 SKILL_DIR = Path.home() / ".claude" / "skills" / "slurm-assistant"
 CONFIG_FILE = SKILL_DIR / "config.json"
 JOBS_FILE = SKILL_DIR / "jobs.json"
+SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
 
 
 class Colors:
@@ -92,13 +93,66 @@ class ConfigManager:
         return self.config.get("cluster", {})
 
     def is_auto_exec_authorized(self) -> bool:
-        """检查是否已授权自动执行"""
-        return self.config.get("auto_exec_authorized", False)
+        """检查是否已授权自动执行（从全局 settings.json 读取）"""
+        if not SETTINGS_FILE.exists():
+            return False
+
+        try:
+            settings = json.loads(SETTINGS_FILE.read_text())
+            permissions = settings.get("permissions", {})
+            allow_list = permissions.get("allow", [])
+
+            # 检查是否有 slurm-cli.py 的授权规则
+            script_path = str(SKILL_DIR / "scripts" / "slurm-cli.py")
+            for rule in allow_list:
+                if script_path in rule or "slurm-cli.py" in rule:
+                    return True
+            return False
+        except:
+            return False
 
     def set_auto_exec_authorized(self, authorized: bool):
-        """设置自动执行授权状态"""
-        self.config["auto_exec_authorized"] = authorized
-        self.save()
+        """设置自动执行授权状态（写入全局 settings.json）"""
+        # 确保目录存在
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        # 读取现有设置
+        if SETTINGS_FILE.exists():
+            try:
+                settings = json.loads(SETTINGS_FILE.read_text())
+            except:
+                settings = {}
+        else:
+            settings = {}
+
+        # 更新 permissions
+        if "permissions" not in settings:
+            settings["permissions"] = {}
+        if "allow" not in settings["permissions"]:
+            settings["permissions"]["allow"] = []
+
+        script_path = str(SKILL_DIR / "scripts" / "slurm-cli.py")
+
+        if authorized:
+            # 添加授权规则（如果不存在）
+            rules = settings["permissions"]["allow"]
+            needed_rules = [
+                f"Bash(uv run python {script_path}*)",
+                f"Bash(python3 {script_path}*)",
+                f"Bash(python {script_path}*)"
+            ]
+            for rule in needed_rules:
+                if rule not in rules:
+                    rules.append(rule)
+        else:
+            # 移除授权规则
+            settings["permissions"]["allow"] = [
+                rule for rule in settings["permissions"]["allow"]
+                if "slurm-cli.py" not in rule
+            ]
+
+        # 保存设置
+        SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
 
 
 class SlurmExecutor:
@@ -402,6 +456,21 @@ def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "
     """
     # Windows 上需要更长的超时时间
     timeout = 15 if platform.system() == "Windows" else 10
+
+    # 首先检查 SSH 是否可用
+    if platform.system() == "Windows":
+        try:
+            # Windows 上先测试 ssh 命令是否可用
+            test_result = subprocess.run(
+                ["ssh", "-V"],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            if test_result.returncode != 0:
+                return False, "SSH command not found or not working"
+        except Exception:
+            return False, "SSH command not available"
+
     ssh_cmd = ["ssh", "-p", str(port), f"-o", f"ConnectTimeout={timeout}", "-o", "BatchMode=yes"]
 
     if jump_host:
@@ -414,8 +483,8 @@ def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "
 
     for attempt in range(max_attempts):
         try:
-            # Windows 下需要使用 shell=True 来正确解析 ssh 命令
-            use_shell = platform.system() == "Windows"
+            # Windows 下尝试不使用 shell，避免参数解析问题
+            use_shell = platform.system() == "Windows" and False
 
             result = subprocess.run(
                 ssh_cmd,
@@ -442,7 +511,11 @@ def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "
                 # 如果是第一次失败且允许重试，再试一次
                 if attempt < max_attempts - 1 and "ok" not in result.stdout:
                     continue
-                return False, result.stderr.strip() or "Unknown error"
+                # 返回详细的错误信息用于调试
+                stderr = result.stderr.strip() if result.stderr else ""
+                stdout = result.stdout.strip() if result.stdout else ""
+                error_details = stderr or stdout or "Unknown error"
+                return False, f"Connection failed: {error_details}"
         except FileNotFoundError:
             return False, "SSH client not found"
         except Exception as e:

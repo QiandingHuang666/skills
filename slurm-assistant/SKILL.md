@@ -225,14 +225,16 @@ gpu-node03          gpu          1/2             16/24           V100
 
 ## 权限配置
 
+**重要：此 skill 为全局安装，授权配置也是全局的（写入 `~/.claude/settings.json`）**
+
 使用 `exec` 命令可以显著减少授权询问次数。
 
 ### 授权状态管理
 
-技能内置授权状态管理，通过配置文件记录用户的选择：
+技能会直接管理全局 settings.json 中的权限规则：
 
 ```bash
-# 授权自动执行
+# 授权自动执行（写入全局 settings.json）
 uv run python "$SCRIPT" init --authorize
 
 # 取消授权
@@ -242,13 +244,32 @@ uv run python "$SCRIPT" init --unauthorize
 uv run python "$SCRIPT" init --check --output-json
 ```
 
+### 授权机制
+
+**授权时自动添加的规则（写入 `~/.claude/settings.json`）：**
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv run python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python3 ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)",
+      "Bash(python ~/.claude/skills/slurm-assistant/scripts/slurm-cli.py*)"
+    ]
+  }
+}
+```
+
+**检测授权状态的方式：**
+- 检查 `~/.claude/settings.json` 是否存在
+- 检查 `permissions.allow` 数组中是否包含 slurm-cli.py 规则
+
 ### 每次会话必查
 
 **AI 必须在每次使用技能时检查授权状态！**
 
 配置检查输出中的 `auto_exec_authorized` 字段表示授权状态：
-- `true`: 用户已授权，可以直接执行命令
-- `false`: 用户未授权，需要询问或每次确认
+- `true`: 全局 settings.json 中已配置授权规则
+- `false`: 未配置授权，需要询问用户
 
 ### 授权询问流程
 
@@ -259,6 +280,7 @@ uv run python "$SCRIPT" init --check --output-json
   "questions": [
     {
       "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
+      "description": "授权将写入 ~/.claude/settings.json 的全局权限规则",
       "options": [
         "是，授权自动执行（推荐）",
         "否，每次执行前确认"
