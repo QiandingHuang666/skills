@@ -150,7 +150,7 @@ class SlurmExecutor:
             jump_host = cluster.get("jump_host", "")
 
             if not host or not username:
-                die("远程模式缺少 host 或 username 配置")
+                die("Remote mode requires host and username configuration")
 
             ssh_cmd = ["ssh", "-p", str(port)] + self.ssh_opts.copy()
 
@@ -189,10 +189,10 @@ class SlurmExecutor:
                         shutil.copytree(src, dst)
                 else:
                     shutil.copy2(src, dst)
-                print_success(f"复制完成: {src} -> {dst}")
+                print_success(f"Copy completed: {src} -> {dst}")
                 return True
             except Exception as e:
-                print_error(f"复制失败: {e}")
+                print_error(f"Copy failed: {e}")
                 return False
 
         cluster = self.config.get_cluster_info()
@@ -202,7 +202,7 @@ class SlurmExecutor:
         jump_host = cluster.get("jump_host", "")
 
         if not host or not username:
-            die("远程模式缺少 host 或 username 配置")
+            die("Remote mode requires host and username configuration")
 
         scp_cmd = ["scp", "-P", str(port), "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=30"]
 
@@ -221,7 +221,7 @@ class SlurmExecutor:
                 dst = remote_prefix + dst
 
         scp_cmd.extend([src, dst])
-        print_info(f"传输: {' '.join(scp_cmd)}")
+        print_info(f"Transferring: {' '.join(scp_cmd)}")
 
         try:
             result = subprocess.run(
@@ -231,13 +231,13 @@ class SlurmExecutor:
                 creationflags=creation_flags
             )
             if result.returncode == 0:
-                print_success(f"传输完成: {src} -> {dst}")
+                print_success(f"Transfer completed: {src} -> {dst}")
                 return True
             else:
-                print_error(f"传输失败: {result.stderr}")
+                print_error(f"Transfer failed: {result.stderr}")
                 return False
         except Exception as e:
-            print_error(f"传输异常: {e}")
+            print_error(f"Transfer error: {e}")
             return False
 
     def check_remote_exists(self, remote_path: str) -> Tuple[bool, str]:
@@ -471,50 +471,50 @@ def cmd_init(args):
         else:
             # 人性化输出
             if config.is_configured():
-                print_success("配置文件: 已加载")
+                print_success("Config: loaded")
 
                 mode = config.get_mode()
                 cluster = config.get_cluster_info()
 
                 if mode == "local":
                     if result["local_slurm_available"]:
-                        print_success("本地 Slurm: 可用")
+                        print_success("Local Slurm: available")
                     else:
-                        print_warning("本地 Slurm: 不可用")
+                        print_warning("Local Slurm: not available")
                 else:
-                    print_info(f"集群: {cluster.get('name', '未知')}")
-                    print_info(f"地址: {cluster.get('username', '未知')}@{cluster.get('host', '未知')}:{cluster.get('port', 22)}")
+                    print_info(f"Cluster: {cluster.get('name', 'unknown')}")
+                    print_info(f"Address: {cluster.get('username', 'unknown')}@{cluster.get('host', 'unknown')}:{cluster.get('port', 22)}")
 
                     if result["ssh_connection_ok"]:
-                        print_success("SSH 连接: 成功（免密登录已配置）")
+                        print_success("SSH: connected (passwordless configured)")
                     else:
-                        print_warning(f"SSH 连接: 失败 ({result.get('ssh_error', '未知错误')})")
+                        print_warning(f"SSH: failed ({result.get('ssh_error', 'unknown error')})")
             else:
-                print_warning("配置文件: 未配置")
+                print_warning("Config: not configured")
 
                 if result["local_slurm_available"]:
-                    print_info("检测到本地 Slurm，可使用本地模式")
+                    print_info("Local Slurm detected, can use local mode")
                 else:
-                    print_info("未检测到本地 Slurm")
+                    print_info("Local Slurm not detected")
 
                 if result["ssh_key_configured"]:
-                    print_info("SSH 密钥: 已配置")
+                    print_info("SSH key: configured")
                 else:
-                    print_warning("SSH 密钥: 未配置")
+                    print_warning("SSH key: not configured")
         return
 
     if not args.mode:
-        die("必须指定 --mode (local 或 remote)")
+        die("Must specify --mode (local or remote)")
 
     if args.mode == "local":
         config.config = {
             "mode": "local",
             "cluster": {"name": args.cluster_name or "local"}
         }
-        print_info("配置模式: 本地")
+        print_info("Mode: local")
     else:
         if not args.host or not args.username:
-            die("远程模式必须指定 --host 和 --username")
+            die("Remote mode requires --host and --username")
 
         config.config = {
             "mode": "remote",
@@ -526,47 +526,47 @@ def cmd_init(args):
                 "jump_host": args.jump_host or ""
             }
         }
-        print_info("配置模式: 远程")
-        print_info(f"集群: {args.cluster_name or 'remote'}")
-        print_info(f"地址: {args.username}@{args.host}:{args.port or 22}")
+        print_info("Mode: remote")
+        print_info(f"Cluster: {args.cluster_name or 'remote'}")
+        print_info(f"Address: {args.username}@{args.host}:{args.port or 22}")
         if args.jump_host:
-            print_info(f"跳板机: {args.jump_host}")
+            print_info(f"Jump host: {args.jump_host}")
 
     config.save()
-    print_success(f"配置已保存到 {CONFIG_FILE}")
+    print_success(f"Configuration saved to {CONFIG_FILE}")
 
     if args.mode == "remote":
-        print_info("检查 SSH 连接...")
+        print_info("Checking SSH connection...")
 
         # 先检查 SSH 密钥
         if not check_ssh_key_exists():
-            print_warning("未检测到 SSH 密钥，可能需要配置免密登录")
-            print_info("参考: https://docs.github.com/zh/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent")
+            print_warning("SSH key not detected, passwordless login may not be configured")
+            print_info("Reference: https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent")
 
         executor = SlurmExecutor(config)
         try:
             result = executor.run("echo '连接成功'")
             if "连接成功" in result:
-                print_success("SSH 连接成功")
+                print_success("SSH connection successful")
             else:
-                print_warning("SSH 连接失败，请配置免密登录")
-                print_info("运行以下命令配置免密登录:")
+                print_warning("SSH connection failed, please configure passwordless login")
+                print_info("Run the following command to configure passwordless login:")
                 print(f"  ssh-copy-id -p {args.port or 22} {args.username}@{args.host}")
         except Exception as e:
-            print_warning(f"SSH 连接失败: {e}")
-            print_info("请检查:")
-            print_info("  1. 主机地址是否正确")
-            print_info("  2. 是否已配置免密登录")
-            print_info("  3. 网络连接是否正常")
+            print_warning(f"SSH connection failed: {e}")
+            print_info("Please check:")
+            print_info("  1. Host address is correct")
+            print_info("  2. Passwordless login is configured")
+            print_info("  3. Network connection is normal")
     else:
         # 本地模式检查 Slurm
         if not check_local_slurm():
-            print_warning("未检测到本地 Slurm 命令")
-            print_info("请确保:")
-            print_info("  1. 您在 Slurm 集群的登录节点上")
-            print_info("  2. Slurm 命令（sinfo, squeue 等）可用")
+            print_warning("Local Slurm commands not detected")
+            print_info("Please ensure:")
+            print_info("  1. You are on the Slurm cluster login node")
+            print_info("  2. Slurm commands (sinfo, squeue, etc.) are available")
         else:
-            print_success("检测到本地 Slurm")
+            print_success("Local Slurm detected")
 
 
 # ============================================================================
@@ -577,7 +577,7 @@ def cmd_status(args):
     """查看资源状态"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     executor = SlurmExecutor(config)
 
@@ -627,7 +627,7 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
                 })
     
     if not gpu_nodes:
-        print_info("未找到 GPU 节点")
+        print_info("No GPU nodes found")
         return
     
     gpu_nodes.sort(key=lambda x: (x['partition'], x['node']))
@@ -635,7 +635,7 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
     # 安全过滤：只允许合法节点名
     valid_nodes = [n['node'] for n in gpu_nodes if validate_node_name(n['node'])]
     if not valid_nodes:
-        print_info("未找到合法的 GPU 节点")
+        print_info("No valid GPU nodes found")
         return
 
     nodes_str = ','.join(valid_nodes)
@@ -654,7 +654,7 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
                 used = int(match.group(1))
                 node_gpu_used[node] = node_gpu_used.get(node, 0) + used
     
-    print(f"{'节点':<20} {'分区':<12} {'GPU 空闲/总数':<15} {'CPU 空闲/总数':<15} {'GPU型号'}")
+    print(f"{'Node':<20} {'Partition':<12} {'GPU Idle/Total':<15} {'CPU Idle/Total':<15} {'GPU Type'}")
     print("-" * 90)
     
     for node in gpu_nodes:
@@ -676,10 +676,10 @@ def cmd_node_info(args):
     """查看节点详情"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.node:
-        die("必须指定节点名称")
+        die("Must specify node name")
 
     executor = SlurmExecutor(config)
     output = executor.run(f"scontrol show node {args.node}")
@@ -694,10 +694,10 @@ def cmd_node_jobs(args):
     """查看节点上的作业"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.node:
-        die("必须指定节点名称")
+        die("Must specify node name")
 
     executor = SlurmExecutor(config)
     
@@ -746,34 +746,34 @@ def cmd_node_jobs(args):
                         'mem': parts[6]
                     })
     
-    print(f"节点: {args.node}")
+    print(f"Node: {args.node}")
     print()
     
-    print(f"[RUNNING] 运行中的作业 ({len(running_jobs)} 个)")
+    print(f"[RUNNING] Running jobs ({len(running_jobs)})")
     if running_jobs:
-        print(f"{'JOBID':<10} {'名称':<25} {'用户':<12} {'运行时长':<12} {'内存'}")
+        print(f"{'JOBID':<10} {'Name':<25} {'User':<12} {'Runtime':<12} {'Memory'}")
         print("-" * 75)
         for job in running_jobs:
             print(f"{job['id']:<10} {job['name'][:24]:<25} {job['user']:<12} "
                   f"{job['time']:<12} {job['mem']}")
     else:
-        print("  无")
+        print("  None")
     
     print()
     
-    print(f"[PENDING] 排队中的作业 ({len(pending_jobs)} 个)")
+    print(f"[PENDING] Pending jobs ({len(pending_jobs)})")
     if pending_jobs:
-        print(f"{'JOBID':<10} {'名称':<25} {'用户':<12} {'排队时长':<12} {'内存'}")
+        print(f"{'JOBID':<10} {'Name':<25} {'User':<12} {'WaitTime':<12} {'Memory'}")
         print("-" * 75)
         for job in pending_jobs:
             print(f"{job['id']:<10} {job['name'][:24]:<25} {job['user']:<12} "
                   f"{job['wait_time']:<12} {job['mem']}")
     else:
-        print("  无")
+        print("  None")
     
     print()
     print("=" * 50)
-    print(f"总计: {len(running_jobs)} 个运行中, {len(pending_jobs)} 个排队中")
+    print(f"Total: {len(running_jobs)} running, {len(pending_jobs)} pending")
 
 
 # ============================================================================
@@ -784,7 +784,7 @@ def cmd_partition_info(args):
     """查看分区详细信息"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     executor = SlurmExecutor(config)
     
@@ -852,15 +852,15 @@ def cmd_partition_info(args):
     
     for partition, p_nodes in sorted(nodes.items()):
         print(f"\n{'='*60}")
-        print(f"分区: {partition}")
+        print(f"Partition: {partition}")
         print(f"{'='*60}")
         
         gpu_nodes = {k: v for k, v in p_nodes.items() if v['has_gpu']}
         cpu_nodes = {k: v for k, v in p_nodes.items() if not v['has_gpu']}
         
         if gpu_nodes:
-            print(f"\n[GPU 节点] ({len(gpu_nodes)} 个)")
-            print(f"{'节点':<18} {'GPU 空闲/总数':<14} {'CPU 空闲/总数':<14} {'作业数':<8} {'内存'}")
+            print(f"\n[GPU Nodes] ({len(gpu_nodes)})")
+            print(f"{'Node':<18} {'GPU Idle/Total':<14} {'CPU Idle/Total':<14} {'Jobs':<8} {'Memory'}")
             print("-" * 75)
             for node, info in sorted(gpu_nodes.items()):
                 gpu_idle = max(0, info['gpu_total'] - info['gpu_used'])
@@ -869,8 +869,8 @@ def cmd_partition_info(args):
                       f"{info['jobs']:<8} {info['mem']}")
         
         if cpu_nodes:
-            print(f"\n[CPU 节点] ({len(cpu_nodes)} 个)")
-            print(f"{'节点':<18} {'CPU 空闲/总数':<14} {'作业数':<8} {'内存'}")
+            print(f"\n[CPU Nodes] ({len(cpu_nodes)})")
+            print(f"{'Node':<18} {'CPU Idle/Total':<14} {'Jobs':<8} {'Memory'}")
             print("-" * 55)
             for node, info in sorted(cpu_nodes.items()):
                 print(f"{node:<18} {info['cpu_idle']}/{info['cpu_total']:<12} "
@@ -885,7 +885,7 @@ def cmd_find_gpu(args):
     """查找 GPU 资源"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     executor = SlurmExecutor(config)
     
@@ -916,7 +916,7 @@ def cmd_find_gpu(args):
                 })
     
     if not gpu_nodes:
-        print_info("未找到匹配的 GPU 节点")
+        print_info("No matching GPU nodes found")
         return
     
     nodes_str = ','.join([n['node'] for n in gpu_nodes])
@@ -935,7 +935,7 @@ def cmd_find_gpu(args):
                 used = int(match.group(1))
                 node_gpu_used[node] = node_gpu_used.get(node, 0) + used
     
-    print(f"{'节点':<20} {'分区':<12} {'GPU 空闲/总数':<15} {'CPU 空闲/总数':<15} {'GPU型号'}")
+    print(f"{'Node':<20} {'Partition':<12} {'GPU Idle/Total':<15} {'CPU Idle/Total':<15} {'GPU Type'}")
     print("-" * 90)
     
     for node in gpu_nodes:
@@ -957,15 +957,15 @@ def cmd_alloc(args):
     """申请交互式资源"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.partition:
-        die("必须指定分区 (-p)")
+        die("Must specify partition (-p)")
 
     # 本地模式下，alloc 是交互式命令，不适合脚本调用
     if config.get_mode() == "local":
-        print_warning("本地模式检测：salloc 是交互式命令")
-        print_info("请在终端直接运行以下命令：")
+        print_warning("Local mode: salloc is an interactive command")
+        print_info("Please run the following command directly in your terminal:")
         cpus = args.cpus if args.cpus > 1 else "自动"
         cmd = f"salloc -p {args.partition}"
         if args.cpus > 1:
@@ -987,7 +987,7 @@ def cmd_alloc(args):
         optimal_cpus = calculate_optimal_cpus(executor, args.partition, args.gres)
         if optimal_cpus > 1:
             cpus = optimal_cpus
-            print_info(f"自动计算 CPU 数量: {cpus}")
+            print_info(f"Auto-calculated CPU count: {cpus}")
 
     # 构建命令
     cmd = f"salloc -p {args.partition} --cpus-per-task={cpus} --time={args.time}"
@@ -998,9 +998,9 @@ def cmd_alloc(args):
     if args.max_wait:
         # 添加等待时间限制
         cmd += f" --wait={args.max_wait}"
-        print_info(f"最大等待时间: {args.max_wait}")
+        print_info(f"Max wait time: {args.max_wait}")
 
-    print_info(f"申请资源: {cmd}")
+    print_info(f"Allocating resources: {cmd}")
     output = executor.run(cmd)
     print(output)
 
@@ -1009,25 +1009,25 @@ def cmd_release(args):
     """释放资源"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.job_id:
-        die("必须指定作业 ID")
+        die("Must specify job ID")
 
     executor = SlurmExecutor(config)
-    print_warning(f"即将释放资源: 作业 {args.job_id}")
+    print_warning(f"Releasing resources: job {args.job_id}")
     executor.run(f"scancel {args.job_id}")
-    print_success("资源已释放")
+    print_success("Resources released")
 
 
 def cmd_run(args):
     """srun 运行命令"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.command:
-        die("必须指定要运行的命令")
+        die("Must specify command to run")
 
     executor = SlurmExecutor(config)
     cmd = f"srun {' '.join(args.command)}"
@@ -1039,10 +1039,10 @@ def cmd_submit(args):
     """提交作业"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.script:
-        die("必须指定脚本路径")
+        die("Must specify script path")
 
     executor = SlurmExecutor(config)
     output = executor.run(f"sbatch '{args.script}'")
@@ -1052,7 +1052,7 @@ def cmd_submit(args):
     if match:
         job_id = match.group(1)
         _record_job(job_id, args.script)
-        print_success(f"作业已提交: {job_id}")
+        print_success(f"Job submitted: {job_id}")
 
 
 def _record_job(job_id: str, script: str):
@@ -1077,7 +1077,7 @@ def cmd_jobs(args):
     """查看作业状态"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     executor = SlurmExecutor(config)
 
@@ -1087,7 +1087,7 @@ def cmd_jobs(args):
         # 使用环境变量获取用户名，更安全可靠
         username = os.environ.get('USER') or os.environ.get('USERNAME')
         if not username:
-            die("无法获取用户名")
+            die("Unable to get username")
         cmd = f"squeue -u {username}"
 
     cmd += " -o '%.8i %.9P %.30j %.8u %.2t %.10M %.6D %R'"
@@ -1099,10 +1099,10 @@ def cmd_log(args):
     """查看作业日志"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.job_id:
-        die("必须指定作业 ID")
+        die("Must specify job ID")
 
     executor = SlurmExecutor(config)
     log_file = f"slurm-{args.job_id}.out"
@@ -1111,15 +1111,15 @@ def cmd_log(args):
         # tail -f 会无限阻塞，不适合通过脚本调用
         # 给出提示让用户直接运行
         if config.get_mode() == "local":
-            print_warning("本地模式：请直接在终端运行以下命令查看实时日志：")
+            print_warning("Local mode: Please run the following command directly in your terminal to view real-time logs:")
             print(f"  tail -f {log_file}")
         else:
-            print_warning("实时日志跟踪不适合通过 SSH 脚本调用")
-            print_info("建议使用以下命令直接查看最新日志：")
+            print_warning("Real-time log tracking is not suitable for SSH script calls")
+            print_info("Recommended: Use the following command to view logs directly:")
             print(f"  ssh -p {config.get_cluster_info().get('port', 22)} {config.get_cluster_info().get('username')}@{config.get_cluster_info().get('host')} 'tail -f {log_file}'")
         return
 
-    output = executor.run(f"cat {log_file} 2>/dev/null || echo '日志文件不存在'")
+    output = executor.run(f"cat {log_file} 2>/dev/null || echo 'Log file not found'")
     print(output)
 
 
@@ -1127,22 +1127,22 @@ def cmd_cancel(args):
     """取消作业"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.job_ids:
-        die("必须指定作业 ID")
+        die("Must specify job ID")
 
     executor = SlurmExecutor(config)
     for job_id in args.job_ids:
-        print_warning(f"取消作业: {job_id}")
+        print_warning(f"Cancelling job: {job_id}")
         executor.run(f"scancel {job_id}")
-    print_success(f"已取消 {len(args.job_ids)} 个作业")
+    print_success(f"Cancelled {len(args.job_ids)} job(s)")
 
 
 def cmd_history(args):
     """作业历史"""
     if not JOBS_FILE.exists():
-        print_info("暂无作业历史")
+        print_info("No job history")
         return
 
     try:
@@ -1154,7 +1154,7 @@ def cmd_history(args):
             submitted = job.get("submitted_at", "?")
             print(f"[{status}] {job_id} - {script} ({submitted})")
     except json.JSONDecodeError:
-        print_info("作业历史文件损坏")
+        print_info("Job history file corrupted")
 
 
 # ============================================================================
@@ -1165,20 +1165,20 @@ def cmd_upload(args):
     """上传文件/目录到集群"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.local:
-        die("必须指定本地路径")
+        die("Must specify local path")
 
     if not args.remote:
-        die("必须指定远程路径")
+        die("Must specify remote path")
 
     local_path = Path(args.local)
     if not local_path.exists():
-        die(f"本地路径不存在: {args.local}")
+        die(f"Local path does not exist: {args.local}")
 
-    local_type = "目录" if local_path.is_dir() else "文件"
-    print_info(f"本地{local_type}: {args.local} ({local_path.stat().st_size} 字节)" if local_path.is_file() else f"本地{local_type}: {args.local}")
+    local_type = "directory" if local_path.is_dir() else "file"
+    print_info(f"Local {local_type}: {args.local} ({local_path.stat().st_size} bytes)" if local_path.is_file() else f"Local {local_type}: {args.local}")
 
     is_dir = local_path.is_dir()
 
@@ -1198,22 +1198,22 @@ def cmd_download(args):
     """从集群下载文件/目录"""
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.remote:
-        die("必须指定远程路径")
+        die("Must specify remote path")
 
     if not args.local:
-        die("必须指定本地路径")
+        die("Must specify local path")
 
     executor = SlurmExecutor(config)
 
     # 检查远程文件/目录是否存在
     remote_exists, remote_type = executor.check_remote_exists(args.remote)
     if not remote_exists:
-        die(f"远程路径不存在: {args.remote}")
+        die(f"Remote path does not exist: {args.remote}")
 
-    print_info(f"远程路径类型: {remote_type}")
+    print_info(f"Remote path type: {remote_type}")
 
     success = executor.transfer(
         src=args.remote,
@@ -1237,10 +1237,10 @@ def cmd_exec(args):
     """
     config = ConfigManager()
     if not config.is_configured():
-        die("请先运行 init 配置")
+        die("Please run 'init' first to configure")
 
     if not args.cmd:
-        die("必须指定要执行的命令")
+        die("Must specify command to execute")
 
     command = args.cmd
 
