@@ -169,11 +169,14 @@ class SlurmExecutor:
             ssh_cmd.append(f"{username}@{host}")
             ssh_cmd.append(cmd)
 
+            # Windows 下需要使用 shell=True
+            use_shell = platform.system() == "Windows"
             result = subprocess.run(
                 ssh_cmd,
                 capture_output=True,
                 text=True,
-                creationflags=creation_flags
+                shell=use_shell,
+                creationflags=creation_flags if not use_shell else 0
             )
             return result.stdout
 
@@ -348,11 +351,18 @@ def check_ssh_key_exists() -> bool:
     for key_file in key_files:
         if (ssh_dir / key_file).exists():
             return True
-        # Windows 可能的密钥位置
-        if platform.system() == "Windows":
-            # 检查用户目录下的 .ssh
+
+    # Windows 特殊检查
+    if platform.system() == "Windows":
+        # 检查用户目录直接下的密钥文件（某些 SSH 客户端的位置）
+        for key_file in key_files:
             if (Path.home() / key_file).exists():
                 return True
+        # 检查 .ppk 文件（PuTTY 密钥）
+        for key_file in key_files:
+            if (ssh_dir / f"{key_file}.ppk").exists():
+                return True
+
     return False
 
 
@@ -396,27 +406,31 @@ def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "
     ssh_cmd.append("echo ok")
 
     try:
+        # Windows 下需要使用 shell=True 来正确解析 ssh 命令
+        use_shell = platform.system() == "Windows"
+
         result = subprocess.run(
             ssh_cmd,
             capture_output=True,
             text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+            shell=use_shell,
+            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" and not use_shell else 0
         )
 
         if result.returncode == 0 and "ok" in result.stdout:
             return True, ""
         elif "Permission denied" in result.stderr or "publickey" in result.stderr:
-            return False, "SSH 免密登录未配置"
+            return False, "SSH passwordless login not configured"
         elif "Could not resolve hostname" in result.stderr:
-            return False, "无法解析主机名"
+            return False, "Cannot resolve hostname"
         elif "Connection refused" in result.stderr:
-            return False, "连接被拒绝，请检查端口"
+            return False, "Connection refused, check port"
         elif "Connection timed out" in result.stderr:
-            return False, "连接超时"
+            return False, "Connection timeout"
         else:
-            return False, result.stderr.strip() or "未知错误"
+            return False, result.stderr.strip() or "Unknown error"
     except FileNotFoundError:
-        return False, "SSH 客户端未找到"
+        return False, "SSH client not found"
     except Exception as e:
         return False, str(e)
 
@@ -1247,6 +1261,80 @@ def cmd_download(args):
         sys.exit(1)
 
 
+def cmd_ssh_test(args):
+    """SSH 连接诊断"""
+    config = ConfigManager()
+
+    # 使用命令行参数或配置
+    host = args.host if args.host else config.get_cluster_info().get("host", "")
+    port = args.port if args.port else config.get_cluster_info().get("port", 22)
+    username = args.username if args.username else config.get_cluster_info().get("username", "")
+
+    if not host or not username:
+        print_error("Host and username are required (use --host and --username, or run init first)")
+        return
+
+    print_info(f"SSH Diagnostics for {username}@{host}:{port}")
+    print()
+
+    # 1. 检查平台信息
+    print_info("Platform Information:")
+    print(f"  OS: {platform.system()} {platform.release()}")
+    print(f"  Python: {platform.python_version()}")
+    print(f"  SSH Command: ssh")
+    print()
+
+    # 2. 检查 SSH 密钥
+    print_info("SSH Key Check:")
+    key_found = check_ssh_key_exists()
+    if key_found:
+        print_success("  SSH keys found")
+    else:
+        print_warning("  No SSH keys found in ~/.ssh/")
+    print()
+
+    # 3. 测试 SSH 连接
+    print_info("SSH Connection Test:")
+    print(f"  Testing: ssh -p {port} {username}@{host} 'echo ok'")
+
+    ssh_ok, ssh_error = check_ssh_connection(host, port, username)
+    if ssh_ok:
+        print_success("  SSH connection successful!")
+    else:
+        print_error(f"  SSH connection failed: {ssh_error}")
+    print()
+
+    # 4. Windows 特定提示
+    if platform.system() == "Windows":
+        print_info("Windows-specific checks:")
+        # 检查是否有 Git Bash
+        git_bash_paths = [
+            "C:/Program Files/Git/bin/sh.exe",
+            "C:/Program Files/Git/usr/bin/ssh.exe",
+            str(Path.home() / "AppData/Local/Programs/Git/bin/ssh.exe")
+        ]
+        git_bash_found = any(Path(p).exists() for p in git_bash_paths)
+        if git_bash_found:
+            print_success("  Git Bash SSH found")
+        else:
+            print_warning("  Git Bash SSH not found")
+
+        # 检查 Windows OpenSSH
+        win_ssh = Path("C:/Windows/System32/OpenSSH/ssh.exe")
+        if win_ssh.exists():
+            print_success("  Windows OpenSSH found")
+            print_info("  Note: Windows OpenSSH may require different key format")
+        else:
+            print_warning("  Windows OpenSSH not found in System32")
+
+        print()
+        print_info("Windows SSH Tips:")
+        print("  1. Use Git Bash for best compatibility")
+        print("  2. Ensure keys are in ~/.ssh/ (not .ppk format)")
+        print("  3. Test manually: ssh -p PORT user@host")
+        print("  4. Check firewall and antivirus settings")
+
+
 def cmd_exec(args):
     """
     在集群上执行任意命令（统一入口，避免多次授权）
@@ -1367,6 +1455,12 @@ def main():
     download_parser.add_argument("local", nargs="?")
     download_parser.add_argument("-r", "--recursive", action="store_true")
 
+    # ssh-test - SSH 连接诊断
+    ssh_test_parser = subparsers.add_parser("ssh-test", help="SSH connection diagnostics")
+    ssh_test_parser.add_argument("--host", help="Remote host (optional, uses config if not specified)")
+    ssh_test_parser.add_argument("--port", type=int, help="SSH port (optional, uses config if not specified)")
+    ssh_test_parser.add_argument("--username", help="Username (optional, uses config if not specified)")
+
     # exec - 在集群上执行任意命令（统一入口）
     exec_parser = subparsers.add_parser("exec", help="在集群上执行命令（统一入口，避免多次授权）")
     exec_parser.add_argument("-c", "--cmd", required=True, help="要执行的命令")
@@ -1394,6 +1488,7 @@ def main():
         "history": cmd_history,
         "upload": cmd_upload,
         "download": cmd_download,
+        "ssh-test": cmd_ssh_test,
         "exec": cmd_exec,
     }
 
