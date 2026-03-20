@@ -392,12 +392,17 @@ def check_local_slurm() -> bool:
         return False
 
 
-def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "") -> Tuple[bool, str]:
+def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "", retry: bool = True) -> Tuple[bool, str]:
     """
     检查 SSH 连接和免密登录（跨平台）
     返回: (是否成功, 错误信息)
+
+    参数:
+        retry: 是否在失败时重试一次（默认 True）
     """
-    ssh_cmd = ["ssh", "-p", str(port), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+    # Windows 上需要更长的超时时间
+    timeout = 15 if platform.system() == "Windows" else 10
+    ssh_cmd = ["ssh", "-p", str(port), f"-o", f"ConnectTimeout={timeout}", "-o", "BatchMode=yes"]
 
     if jump_host:
         ssh_cmd.extend(["-J", jump_host])
@@ -405,34 +410,47 @@ def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "
     ssh_cmd.append(f"{username}@{host}")
     ssh_cmd.append("echo ok")
 
-    try:
-        # Windows 下需要使用 shell=True 来正确解析 ssh 命令
-        use_shell = platform.system() == "Windows"
+    max_attempts = 2 if retry else 1
 
-        result = subprocess.run(
-            ssh_cmd,
-            capture_output=True,
-            text=True,
-            shell=use_shell,
-            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" and not use_shell else 0
-        )
+    for attempt in range(max_attempts):
+        try:
+            # Windows 下需要使用 shell=True 来正确解析 ssh 命令
+            use_shell = platform.system() == "Windows"
 
-        if result.returncode == 0 and "ok" in result.stdout:
-            return True, ""
-        elif "Permission denied" in result.stderr or "publickey" in result.stderr:
-            return False, "SSH passwordless login not configured"
-        elif "Could not resolve hostname" in result.stderr:
-            return False, "Cannot resolve hostname"
-        elif "Connection refused" in result.stderr:
-            return False, "Connection refused, check port"
-        elif "Connection timed out" in result.stderr:
-            return False, "Connection timeout"
-        else:
-            return False, result.stderr.strip() or "Unknown error"
-    except FileNotFoundError:
-        return False, "SSH client not found"
-    except Exception as e:
-        return False, str(e)
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                shell=use_shell,
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" and not use_shell else 0
+            )
+
+            if result.returncode == 0 and "ok" in result.stdout:
+                return True, ""
+            elif "Permission denied" in result.stderr or "publickey" in result.stderr:
+                return False, "SSH passwordless login not configured"
+            elif "Could not resolve hostname" in result.stderr:
+                return False, "Cannot resolve hostname"
+            elif "Connection refused" in result.stderr:
+                return False, "Connection refused, check port"
+            elif "Connection timed out" in result.stderr or "timed out" in result.stderr.lower():
+                # 重试超时
+                if attempt < max_attempts - 1:
+                    continue
+                return False, f"Connection timeout after {timeout}s"
+            else:
+                # 如果是第一次失败且允许重试，再试一次
+                if attempt < max_attempts - 1 and "ok" not in result.stdout:
+                    continue
+                return False, result.stderr.strip() or "Unknown error"
+        except FileNotFoundError:
+            return False, "SSH client not found"
+        except Exception as e:
+            if attempt < max_attempts - 1:
+                continue
+            return False, str(e)
+
+    return False, "Connection failed after retry"
 
 
 def cmd_init(args):
