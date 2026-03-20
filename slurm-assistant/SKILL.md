@@ -28,17 +28,29 @@ compatibility:
 
 **重要：在执行任何命令前，必须先进行配置检查！**
 
-### 第一步：检查配置文件是否存在
+### 检查命令
 
 ```bash
-uv run python "$SCRIPT" init --check
+uv run python "$SCRIPT" init --check --output-json
 ```
 
-### 第二步：根据检查结果处理
+### 检查结果说明
 
-#### 场景 A：配置文件不存在
+```json
+{
+  "configured": true/false,          // 是否已配置
+  "local_slurm_available": true/false,  // 本地 Slurm 是否可用
+  "ssh_key_configured": true/false,  // SSH 密钥是否已配置
+  "ssh_connection_ok": true/false,   // SSH 连接是否成功
+  "config_valid": true/false         // 配置是否有效
+}
+```
 
-触发"首次连接"流程，引导用户选择使用模式：
+### 处理流程
+
+#### 场景 A：未配置 (`configured: false`)
+
+触发"首次连接"流程，使用 `AskUserQuestion` 询问用户：
 
 ```json
 {
@@ -58,30 +70,27 @@ uv run python "$SCRIPT" init --check
 - 远程模式 → `workflow_init.md`
 - 本地模式 → `workflow_local_execution.md`
 
-#### 场景 B：配置文件已存在
+#### 场景 B：已配置但无效 (`configured: true, config_valid: false`)
 
-向用户确认配置是否正确，是否需要变动：
+向用户说明问题并询问是否重新配置：
 
 ```json
 {
   "questions": [
     {
-      "question": "检测到已有配置，是否需要修改？",
-      "options": [
-        "配置正确，直接使用",
-        "需要修改配置",
-        "查看当前配置"
-      ]
+      "question": "配置存在问题：{config_error}。是否重新配置？",
+      "options": ["重新配置", "稍后处理"]
     }
   ]
 }
 ```
 
-**选择"需要修改配置"** → 引导用户重新配置
+#### 场景 C：已配置且有效 (`configured: true, config_valid: true`)
 
-**选择"查看当前配置"** → 执行：
-```bash
-uv run python "$SCRIPT" init --check --output-json
+配置正确，可以直接使用。向用户简要确认：
+
+```
+配置已加载，可以开始使用。
 ```
 
 ---
