@@ -91,6 +91,15 @@ class ConfigManager:
     def get_cluster_info(self) -> Dict[str, Any]:
         return self.config.get("cluster", {})
 
+    def is_auto_exec_authorized(self) -> bool:
+        """检查是否已授权自动执行"""
+        return self.config.get("auto_exec_authorized", False)
+
+    def set_auto_exec_authorized(self, authorized: bool):
+        """设置自动执行授权状态"""
+        self.config["auto_exec_authorized"] = authorized
+        self.save()
+
 
 class SlurmExecutor:
     """Slurm 执行器"""
@@ -416,6 +425,17 @@ def cmd_init(args):
     """初始化配置"""
     config = ConfigManager()
 
+    # 处理授权/取消授权
+    if args.authorize:
+        config.set_auto_exec_authorized(True)
+        print_success("Auto-execution authorized")
+        return
+
+    if args.unauthorize:
+        config.set_auto_exec_authorized(False)
+        print_info("Auto-execution authorization revoked")
+        return
+
     if args.check:
         # 配置检查模式
         result = {
@@ -423,7 +443,8 @@ def cmd_init(args):
             "local_slurm_available": False,
             "ssh_key_configured": False,
             "ssh_connection_ok": False,
-            "config_valid": False
+            "config_valid": False,
+            "auto_exec_authorized": config.is_auto_exec_authorized()
         }
 
         # 检查本地 Slurm
@@ -1268,6 +1289,8 @@ def main():
     init_parser.add_argument("--check", action="store_true")
     init_parser.add_argument("--output-json", action="store_true")
     init_parser.add_argument("--fast", action="store_true", help="快速模式：跳过 SSH 连接测试")
+    init_parser.add_argument("--authorize", action="store_true", help="授权自动执行命令")
+    init_parser.add_argument("--unauthorize", action="store_true", help="取消自动执行授权")
     init_parser.add_argument("--mode", choices=["local", "remote"])
     init_parser.add_argument("--cluster-name")
     init_parser.add_argument("--host")

@@ -122,6 +122,48 @@ uv run python "$SCRIPT" init --mode local --cluster-name "用户输入的名称"
 
 ---
 
+## 4. 授权状态检查（必查）
+
+**重要：配置保存后，必须检查授权状态！**
+
+### 检查授权状态
+
+```bash
+uv run python "$SCRIPT" init --check --output-json --fast
+```
+
+查看输出中的 `auto_exec_authorized` 字段：
+- `true`: 用户已授权，可以跳过授权询问
+- `false`: 用户未授权，必须询问
+
+### 授权询问
+
+如果 `auto_exec_authorized: false`，必须询问用户：
+
+```json
+{
+  "questions": [
+    {
+      "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
+      "options": [
+        "是，授权自动执行（推荐）",
+        "否，每次执行前确认"
+      ]
+    }
+  ]
+}
+```
+
+### 设置授权
+
+用户选择"是"后，执行授权命令：
+
+```bash
+uv run python "$SCRIPT" init --authorize
+```
+
+---
+
 ## 相关文档
 
 - `references/set_free_password.md` - 免密登录配置

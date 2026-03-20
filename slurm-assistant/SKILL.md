@@ -41,7 +41,8 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
   "local_slurm_available": true/false,  // 本地 Slurm 是否可用
   "ssh_key_configured": true/false,  // SSH 密钥是否已配置
   "ssh_connection_ok": true/false,   // SSH 连接是否成功
-  "config_valid": true/false         // 配置是否有效
+  "config_valid": true/false,        // 配置是否有效
+  "auto_exec_authorized": true/false // 是否已授权自动执行（新增）
 }
 ```
 
@@ -86,11 +87,36 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
 
 #### 场景 C：已配置且有效 (`configured: true, config_valid: true`)
 
-配置正确，可以直接使用。向用户简要确认：
+配置正确，可以继续检查授权状态。
 
+#### 场景 D：授权状态检查（所有场景必查）
+
+**重要：无论配置状态如何，都必须检查 `auto_exec_authorized` 字段！**
+
+如果 `auto_exec_authorized: false`，必须询问用户：
+
+```json
+{
+  "questions": [
+    {
+      "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
+      "options": [
+        "是，授权自动执行（推荐）",
+        "否，每次执行前确认"
+      ]
+    }
+  ]
+}
 ```
-配置已加载，可以开始使用。
+
+**用户选择"是"时：**
+执行授权命令：
+```bash
+uv run python "$SCRIPT" init --authorize
 ```
+
+**用户选择"否"时：**
+无需操作，继续正常流程（每次执行命令时会询问授权）
 
 ---
 
@@ -201,24 +227,55 @@ gpu-node03          gpu          1/2             16/24           V100
 
 使用 `exec` 命令可以显著减少授权询问次数。
 
-### 首次使用询问
+### 授权状态管理
 
-首次使用时，应询问用户是否配置权限：
+技能内置授权状态管理，通过配置文件记录用户的选择：
+
+```bash
+# 授权自动执行
+uv run python "$SCRIPT" init --authorize
+
+# 取消授权
+uv run python "$SCRIPT" init --unauthorize
+
+# 查看授权状态（在 --check 输出中）
+uv run python "$SCRIPT" init --check --output-json
+```
+
+### 每次会话必查
+
+**AI 必须在每次使用技能时检查授权状态！**
+
+配置检查输出中的 `auto_exec_authorized` 字段表示授权状态：
+- `true`: 用户已授权，可以直接执行命令
+- `false`: 用户未授权，需要询问或每次确认
+
+### 授权询问流程
+
+当 `auto_exec_authorized: false` 时，必须询问用户：
 
 ```json
 {
   "questions": [
     {
-      "question": "为减少授权询问，是否允许 slurm-cli.py 自动执行？",
-      "options": ["是，添加到允许列表", "否，每次确认"]
+      "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
+      "options": [
+        "是，授权自动执行（推荐）",
+        "否，每次执行前确认"
+      ]
     }
   ]
 }
 ```
 
-### 推荐配置
+**用户选择"是"后，执行授权命令：**
+```bash
+uv run python "$SCRIPT" init --authorize
+```
 
-选择"是"时，将以下规则添加到 `~/.claude/settings.json`：
+### Claude Code 权限配置（可选）
+
+如果用户想要在 Claude Code 层面完全跳过授权询问，可以手动添加到 `~/.claude/settings.json`：
 
 ```json
 {
