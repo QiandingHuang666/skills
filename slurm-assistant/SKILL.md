@@ -197,8 +197,13 @@ uv run python "$SCRIPT" exec -c <命令>
 | 功能 | 说明 | 详细 |
 |------|------|------|
 | 公共资源检查 | 下载前检查 `/home/share/Official/` 公共目录 | `references/gzu_public_resources.md` |
+| LaTeX 快速安装 | 使用集群提供的 TeX Live 安装脚本 | `references/gzu_public_resources.md` |
 
 **重要：** 贵州大学用户在下载数据集或安装软件前，AI 必须先引导用户检查公共资源，避免重复下载。
+
+**LaTeX 安装：**
+- 用户需要 LaTeX 但未安装时，引导执行：`sh /home/share/Official/tools/texlive/install.sh`
+- 避免用户手动下载安装 TexLive（非常耗时）
 
 ---
 
