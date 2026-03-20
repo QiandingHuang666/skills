@@ -125,8 +125,22 @@ class SlurmExecutor:
         """在集群上执行命令"""
         mode = self.config.get_mode()
 
+        # Windows 下不显示命令行窗口
+        creation_flags = 0
+        if platform.system() == "Windows":
+            try:
+                creation_flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError:
+                pass
+
         if mode == "local":
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                creationflags=creation_flags
+            )
             return result.stdout
         else:
             cluster = self.config.get_cluster_info()
@@ -146,12 +160,25 @@ class SlurmExecutor:
             ssh_cmd.append(f"{username}@{host}")
             ssh_cmd.append(cmd)
 
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                creationflags=creation_flags
+            )
             return result.stdout
 
     def transfer(self, src: str, dst: str, download: bool = False, recursive: bool = False) -> bool:
         """使用 scp 传输文件"""
         mode = self.config.get_mode()
+
+        # Windows 下不显示命令行窗口
+        creation_flags = 0
+        if platform.system() == "Windows":
+            try:
+                creation_flags = subprocess.CREATE_NO_WINDOW
+            except AttributeError:
+                pass
 
         if mode == "local":
             try:
@@ -197,7 +224,12 @@ class SlurmExecutor:
         print_info(f"传输: {' '.join(scp_cmd)}")
 
         try:
-            result = subprocess.run(scp_cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                scp_cmd,
+                capture_output=True,
+                text=True,
+                creationflags=creation_flags
+            )
             if result.returncode == 0:
                 print_success(f"传输完成: {src} -> {dst}")
                 return True
@@ -296,20 +328,163 @@ def calculate_optimal_cpus(executor: SlurmExecutor, partition: str, gres: Option
 # 命令: init
 # ============================================================================
 
+def check_ssh_key_exists() -> bool:
+    """检查 SSH 密钥是否存在（跨平台）"""
+    ssh_dir = Path.home() / ".ssh"
+    if not ssh_dir.exists():
+        return False
+
+    # 检查常见的私钥文件
+    key_files = ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"]
+    for key_file in key_files:
+        if (ssh_dir / key_file).exists():
+            return True
+        # Windows 可能的密钥位置
+        if platform.system() == "Windows":
+            # 检查用户目录下的 .ssh
+            if (Path.home() / key_file).exists():
+                return True
+    return False
+
+
+def check_local_slurm() -> bool:
+    """检查本地是否有 Slurm（跨平台）"""
+    try:
+        # 检查 sinfo 命令是否可用
+        result = subprocess.run(
+            ["sinfo", "--version"],
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def check_ssh_connection(host: str, port: int, username: str, jump_host: str = "") -> Tuple[bool, str]:
+    """
+    检查 SSH 连接和免密登录（跨平台）
+    返回: (是否成功, 错误信息)
+    """
+    ssh_cmd = ["ssh", "-p", str(port), "-o", "ConnectTimeout=5", "-o", "BatchMode=yes"]
+
+    if jump_host:
+        ssh_cmd.extend(["-J", jump_host])
+
+    ssh_cmd.append(f"{username}@{host}")
+    ssh_cmd.append("echo ok")
+
+    try:
+        result = subprocess.run(
+            ssh_cmd,
+            capture_output=True,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
+        )
+
+        if result.returncode == 0 and "ok" in result.stdout:
+            return True, ""
+        elif "Permission denied" in result.stderr or "publickey" in result.stderr:
+            return False, "SSH 免密登录未配置"
+        elif "Could not resolve hostname" in result.stderr:
+            return False, "无法解析主机名"
+        elif "Connection refused" in result.stderr:
+            return False, "连接被拒绝，请检查端口"
+        elif "Connection timed out" in result.stderr:
+            return False, "连接超时"
+        else:
+            return False, result.stderr.strip() or "未知错误"
+    except FileNotFoundError:
+        return False, "SSH 客户端未找到"
+    except Exception as e:
+        return False, str(e)
+
+
 def cmd_init(args):
     """初始化配置"""
     config = ConfigManager()
 
     if args.check:
-        configured = config.is_configured()
-        if args.output_json:
-            result = {"configured": configured, "local_slurm_available": False}
-            print(json.dumps(result))
-        else:
-            if configured:
-                print_success("已配置")
+        # 配置检查模式
+        result = {
+            "configured": config.is_configured(),
+            "local_slurm_available": False,
+            "ssh_key_configured": False,
+            "ssh_connection_ok": False,
+            "config_valid": False
+        }
+
+        # 检查本地 Slurm
+        result["local_slurm_available"] = check_local_slurm()
+
+        # 检查 SSH 密钥
+        result["ssh_key_configured"] = check_ssh_key_exists()
+
+        if config.is_configured():
+            mode = config.get_mode()
+            cluster = config.get_cluster_info()
+
+            if mode == "remote":
+                host = cluster.get("host", "")
+                port = cluster.get("port", 22)
+                username = cluster.get("username", "")
+                jump_host = cluster.get("jump_host", "")
+
+                if host and username:
+                    # 检查 SSH 连接
+                    ssh_ok, ssh_error = check_ssh_connection(host, port, username, jump_host)
+                    result["ssh_connection_ok"] = ssh_ok
+                    result["ssh_error"] = ssh_error if not ssh_ok else ""
+                    result["config_valid"] = ssh_ok
+                else:
+                    result["config_valid"] = False
+                    result["config_error"] = "缺少 host 或 username"
             else:
-                print_warning("未配置")
+                # 本地模式
+                result["config_valid"] = result["local_slurm_available"]
+                if not result["local_slurm_available"]:
+                    result["config_error"] = "本地未检测到 Slurm"
+        else:
+            result["config_valid"] = False
+            result["config_error"] = "未配置"
+
+        if args.output_json:
+            print(json.dumps(result, ensure_ascii=False))
+        else:
+            # 人性化输出
+            if config.is_configured():
+                print_success("配置文件: 已加载")
+
+                mode = config.get_mode()
+                cluster = config.get_cluster_info()
+
+                if mode == "local":
+                    if result["local_slurm_available"]:
+                        print_success("本地 Slurm: 可用")
+                    else:
+                        print_warning("本地 Slurm: 不可用")
+                else:
+                    print_info(f"集群: {cluster.get('name', '未知')}")
+                    print_info(f"地址: {cluster.get('username', '未知')}@{cluster.get('host', '未知')}:{cluster.get('port', 22)}")
+
+                    if result["ssh_connection_ok"]:
+                        print_success("SSH 连接: 成功（免密登录已配置）")
+                    else:
+                        print_warning(f"SSH 连接: 失败 ({result.get('ssh_error', '未知错误')})")
+            else:
+                print_warning("配置文件: 未配置")
+
+                if result["local_slurm_available"]:
+                    print_info("检测到本地 Slurm，可使用本地模式")
+                else:
+                    print_info("未检测到本地 Slurm")
+
+                if result["ssh_key_configured"]:
+                    print_info("SSH 密钥: 已配置")
+                else:
+                    print_warning("SSH 密钥: 未配置")
         return
 
     if not args.mode:
@@ -320,9 +495,11 @@ def cmd_init(args):
             "mode": "local",
             "cluster": {"name": args.cluster_name or "local"}
         }
+        print_info("配置模式: 本地")
     else:
         if not args.host or not args.username:
             die("远程模式必须指定 --host 和 --username")
+
         config.config = {
             "mode": "remote",
             "cluster": {
@@ -333,12 +510,23 @@ def cmd_init(args):
                 "jump_host": args.jump_host or ""
             }
         }
+        print_info("配置模式: 远程")
+        print_info(f"集群: {args.cluster_name or 'remote'}")
+        print_info(f"地址: {args.username}@{args.host}:{args.port or 22}")
+        if args.jump_host:
+            print_info(f"跳板机: {args.jump_host}")
 
     config.save()
     print_success(f"配置已保存到 {CONFIG_FILE}")
 
     if args.mode == "remote":
-        print_info("测试 SSH 连接...")
+        print_info("检查 SSH 连接...")
+
+        # 先检查 SSH 密钥
+        if not check_ssh_key_exists():
+            print_warning("未检测到 SSH 密钥，可能需要配置免密登录")
+            print_info("参考: https://docs.github.com/zh/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent")
+
         executor = SlurmExecutor(config)
         try:
             result = executor.run("echo '连接成功'")
@@ -346,8 +534,23 @@ def cmd_init(args):
                 print_success("SSH 连接成功")
             else:
                 print_warning("SSH 连接失败，请配置免密登录")
+                print_info("运行以下命令配置免密登录:")
+                print(f"  ssh-copy-id -p {args.port or 22} {args.username}@{args.host}")
         except Exception as e:
             print_warning(f"SSH 连接失败: {e}")
+            print_info("请检查:")
+            print_info("  1. 主机地址是否正确")
+            print_info("  2. 是否已配置免密登录")
+            print_info("  3. 网络连接是否正常")
+    else:
+        # 本地模式检查 Slurm
+        if not check_local_slurm():
+            print_warning("未检测到本地 Slurm 命令")
+            print_info("请确保:")
+            print_info("  1. 您在 Slurm 集群的登录节点上")
+            print_info("  2. Slurm 命令（sinfo, squeue 等）可用")
+        else:
+            print_success("检测到本地 Slurm")
 
 
 # ============================================================================
