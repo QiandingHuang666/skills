@@ -100,23 +100,28 @@ uv run python "$SCRIPT" init --check --output-json --fast
 
 ## 3. 保存配置
 
+### 贵州大学 HPC
+
 ```bash
-# 贵州大学 HPC
 uv run python "$SCRIPT" init --mode remote \
   --cluster-name "贵州大学 HPC" \
   --host 210.40.56.85 \
   --port 21563 \
   --username "用户输入的用户名"
+```
 
-# 其他集群
+### 其他集群
+```bash
 uv run python "$SCRIPT" init --mode remote \
   --cluster-name "用户输入的名称" \
   --host "用户输入的地址" \
   --port 用户输入的端口 \
   --username "用户输入的用户名" \
   --jump-host "跳板机地址（如有）"
+```
 
-# 本地模式
+### 本地模式
+```bash
 uv run python "$SCRIPT" init --mode local --cluster-name "用户输入的名称"
 ```
 

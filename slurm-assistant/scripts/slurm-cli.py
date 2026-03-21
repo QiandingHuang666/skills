@@ -671,8 +671,8 @@ def cmd_init(args):
 
         executor = SlurmExecutor(config)
         try:
-            result = executor.run("echo '连接成功'")
-            if "连接成功" in result:
+            result = executor.run("echo 'Connection Successful'")
+            if "Connection Successful" in result:
                 print_success("SSH connection successful")
             else:
                 print_warning("SSH connection failed, please configure passwordless login")
