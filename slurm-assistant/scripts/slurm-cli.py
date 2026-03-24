@@ -167,7 +167,7 @@ class ConfigManager:
         if agent_name not in authorized:
             authorized.append(agent_name)
             self.config["authorized_agents"] = authorized
-            self._save()
+            self.save()
 
     def unauthorize_agent(self, agent_name: str = None):
         """取消指定 Agent 的授权（默认当前 Agent）"""
@@ -177,7 +177,7 @@ class ConfigManager:
         if agent_name in authorized:
             authorized.remove(agent_name)
             self.config["authorized_agents"] = authorized
-            self._save()
+            self.save()
 
 
 class SlurmExecutor:
