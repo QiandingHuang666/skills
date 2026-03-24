@@ -117,9 +117,9 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
 
 **背景**：部分集群提供"实例"功能，IP 与集群一致，端口不同。
 
-### 1. 询问端口
+### 1. 询问端口和用户名
 
-使用 AskUserQuestion 收集实例端口：
+使用 AskUserQuestion 收集实例端口和用户名：
 
 ```json
 {
@@ -127,35 +127,71 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
     {
       "question": "请问实例的 SSH 端口是？",
       "header": "实例端口"
+    },
+    {
+      "question": "请问您的集群用户名是？",
+      "header": "用户名"
     }
   ]
 }
 ```
 
-### 2. 保存配置
+### 2. 验证免密登录
 
-获取端口后，使用 init 命令保存配置：
+在保存配置前，必须先验证免密登录是否已配置：
+
+```bash
+uv run python "$SCRIPT" ssh-test --host "<集群 host>" --port <用户输入的端口> --username <用户输入的用户名>
+```
+
+**根据验证结果处理：**
+
+#### 2a. 免密登录已配置（验证成功）
+
+继续执行步骤 3 保存配置。
+
+#### 2b. 免密登录未配置（验证失败）
+
+告知用户需要先配置免密登录，并引导配置：
+
+```
+检测到 SSH 免密登录未配置。请按以下步骤配置：
+
+1. 在本地生成 SSH 密钥（如果已有可跳过）：
+   ssh-keygen -t ed25519
+
+2. 将公钥复制到集群：
+   ssh-copy-id -p <端口> <用户名>@<集群 host>
+
+3. 配置完成后，请告诉我"已配置"，我将继续连接流程。
+```
+
+**等待用户确认配置完成后再继续。**
+
+### 3. 保存配置
+
+获取端口和验证免密登录后，使用 init 命令保存配置：
 
 ```bash
 uv run python "$SCRIPT" init --mode remote \
   --cluster-name "<原集群名> 实例" \
   --host "<原集群 host>" \
   --port <用户输入的端口> \
-  --username "<原用户名>"
+  --username "<用户输入的用户名>"
 ```
 
 **说明**：
 - `--host`：与原集群相同的 IP 地址
 - `--port`：用户提供的实例端口
-- 其他参数保持与原集群配置一致
+- `--username`：用户提供的用户名
 
-### 3. 验证连接
+### 4. 验证连接
 
 ```bash
 uv run python "$SCRIPT" ssh-test
 ```
 
-### 4. 确认成功
+### 5. 确认成功
 
 告知用户：
 ```
