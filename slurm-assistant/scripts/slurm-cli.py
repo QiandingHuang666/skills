@@ -431,24 +431,137 @@ class ResourceCheckResult:
     message: str
 
 
-def _get_node_gpu_usage(executor, node_name: str) -> int:
-    """查询节点上已使用的 GPU 数量"""
-    if not validate_node_name(node_name):
-        return 0
+def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> List[NodeResourceInfo]:
+    """
+    使用 scontrol show node 获取节点信息（准确的 GPU 分配信息）
 
-    try:
-        output = executor.run(f"squeue -w {node_name} -t RUNNING -h -o '%b'")
-        total_used = 0
-        for line in output.splitlines():
-            if not line.strip():
-                continue
-            # 匹配 gpu:xxx:N 或 gpu:N 格式（与 _show_gpu_status 保持一致）
-            match = re.search(r'gpu:\w*:?(\d+)', line.lower())
+    返回 NodeResourceInfo 列表
+    """
+    output = executor.run("scontrol show node")
+
+    nodes = []
+    current_node = None
+    current_gres = None
+    current_alloc_tres = None
+    current_partition = None
+    current_cpu_alloc = None
+    current_cpu_total = None
+    current_mem = None
+
+    for line in output.splitlines():
+        line = line.strip()
+
+        # NodeName 行，开始新节点
+        if line.startswith('NodeName='):
+            # 保存上一个节点的信息
+            if current_node:
+                # 解析 GPU 信息
+                gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
+
+                # 从 AllocTRES 解析已分配 GPU
+                gpu_alloc = 0
+                if current_alloc_tres:
+                    match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+                    if match:
+                        gpu_alloc = int(match.group(1))
+
+                # 解析 CPU 信息
+                cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
+                cpu_t = int(current_cpu_total) if current_cpu_total else 0
+                cpu_i = cpu_t - cpu_a
+
+                # 计算 cpus_per_gpu
+                cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
+
+                nodes.append(NodeResourceInfo(
+                    node_name=current_node,
+                    partition=current_partition or 'unknown',
+                    gpu_total=gpu_total,
+                    gpu_idle=max(0, gpu_total - gpu_alloc),
+                    gpu_type=gpu_type.upper() if gpu_type else 'N/A',
+                    cpu_total=cpu_t,
+                    cpu_idle=cpu_i,
+                    mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
+                    cpus_per_gpu=cpus_per_gpu
+                ))
+
+            # 解析新节点
+            match = re.search(r'NodeName=(\S+)', line)
+            current_node = match.group(1) if match else None
+            current_gres = None
+            current_alloc_tres = None
+            current_partition = None
+            current_cpu_alloc = None
+            current_cpu_total = None
+            current_mem = None
+
+        # Gres 行
+        elif line.startswith('Gres='):
+            current_gres = line.split('=', 1)[1]
+
+        # Partitions 行
+        elif line.startswith('Partitions='):
+            current_partition = line.split('=', 1)[1]
+
+        # AllocTRES 行
+        elif line.startswith('AllocTRES='):
+            current_alloc_tres = line.split('=', 1)[1]
+
+        # CPUAlloc 行
+        elif line.startswith('CPUAlloc='):
+            match = re.search(r'CPUAlloc=(\d+)', line)
             if match:
-                total_used += int(match.group(1))
-        return total_used
-    except Exception:
-        return 0
+                current_cpu_alloc = match.group(1)
+
+        # CPUTot 行
+        elif 'CPUTot=' in line:
+            match = re.search(r'CPUTot=(\d+)', line)
+            if match:
+                current_cpu_total = match.group(1)
+
+        # RealMemory 行
+        elif line.startswith('RealMemory='):
+            match = re.search(r'RealMemory=(\d+)', line)
+            if match:
+                current_mem = match.group(1)
+
+    # 处理最后一个节点
+    if current_node:
+        gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
+        gpu_alloc = 0
+        if current_alloc_tres:
+            match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+            if match:
+                gpu_alloc = int(match.group(1))
+
+        cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
+        cpu_t = int(current_cpu_total) if current_cpu_total else 0
+        cpu_i = cpu_t - cpu_a
+
+        cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
+
+        nodes.append(NodeResourceInfo(
+            node_name=current_node,
+            partition=current_partition or 'unknown',
+            gpu_total=gpu_total,
+            gpu_idle=max(0, gpu_total - gpu_alloc),
+            gpu_type=gpu_type.upper() if gpu_type else 'N/A',
+            cpu_total=cpu_t,
+            cpu_idle=cpu_i,
+            mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
+            cpus_per_gpu=cpus_per_gpu
+        ))
+
+    # 过滤分区
+    if partition:
+        nodes = [n for n in nodes if partition in n.partition]
+
+    return nodes
+
+
+def _get_node_gpu_usage(executor, node_name: str) -> int:
+    """查询节点上已使用的 GPU 数量（已废弃，保留兼容性）"""
+    return 0
 
 
 def _estimate_wait_time(executor, partition: str) -> Optional[str]:
@@ -475,7 +588,7 @@ def check_partition_resources(
     min_cpus: int = 1
 ) -> ResourceCheckResult:
     """
-    检查分区资源可用性
+    检查分区资源可用性（使用 scontrol show node 获取精确 GPU 分配信息）
 
     参数:
         executor: Slurm 执行器
@@ -487,10 +600,9 @@ def check_partition_resources(
     返回:
         ResourceCheckResult 包含资源检查结果和建议
     """
-    # 1. 获取分区节点信息
-    cmd = f"sinfo -p {partition} -N -h -o '%N|%C|%G|%m|%T'"
+    # 1. 使用 scontrol 获取节点信息
     try:
-        output = executor.run(cmd)
+        nodes_info = _get_nodes_info_from_scontrol(executor, partition)
     except Exception as e:
         return ResourceCheckResult(
             has_available=False,
@@ -500,48 +612,6 @@ def check_partition_resources(
             wait_estimate=None,
             message=f"查询分区信息失败: {e}"
         )
-
-    nodes_info = []
-    for line in output.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split('|')
-        if len(parts) < 5:
-            continue
-
-        node_name, cpu_alloc, gres, mem, state = parts[0], parts[1], parts[2], parts[3], parts[4]
-
-        # 跳过不可用状态的节点
-        if 'down' in state.lower() or 'drain' in state.lower():
-            continue
-
-        # 解析 CPU 分配 (A/I/O/T)
-        cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu_alloc)
-        # 解析 GPU 信息
-        node_gpu_total, node_gpu_type = parse_gpu_gres(gres)
-
-        # 如果指定了 GPU 型号，过滤不符合的节点
-        if gpu_type and gpu_type.lower() not in node_gpu_type.lower():
-            continue
-
-        # 查询该节点上正在运行的作业占用的 GPU
-        gpu_used = _get_node_gpu_usage(executor, node_name)
-        gpu_idle = max(0, node_gpu_total - gpu_used)
-
-        # 计算每 GPU 对应的 CPU 数量
-        cpus_per_gpu = cpu_t // max(node_gpu_total, 1) if node_gpu_total > 0 else cpu_t
-
-        nodes_info.append(NodeResourceInfo(
-            node_name=node_name,
-            partition=partition,
-            gpu_total=node_gpu_total,
-            gpu_idle=gpu_idle,
-            gpu_type=node_gpu_type.upper() if node_gpu_type else 'N/A',
-            cpu_total=cpu_t,
-            cpu_idle=cpu_i,
-            mem_total=int(mem) if mem.isdigit() else 0,
-            cpus_per_gpu=cpus_per_gpu
-        ))
 
     if not nodes_info:
         return ResourceCheckResult(
@@ -553,7 +623,11 @@ def check_partition_resources(
             message=f"分区 {partition} 没有找到符合条件的节点"
         )
 
-    # 2. 筛选满足条件的可用节点
+    # 2. 如果指定了 GPU 型号，过滤不符合的节点
+    if gpu_type:
+        nodes_info = [n for n in nodes_info if gpu_type.lower() in n.gpu_type.lower()]
+
+    # 3. 筛选满足条件的可用节点
     available_nodes = []
     for node in nodes_info:
         if gpu_count > 0:
@@ -565,7 +639,7 @@ def check_partition_resources(
             if node.cpu_idle >= min_cpus:
                 available_nodes.append(node)
 
-    # 3. 按空闲资源排序（优先选择空闲资源最充足的节点）
+    # 4. 按空闲资源排序（优先选择空闲资源最充足的节点）
     if gpu_count > 0:
         # GPU 请求：按空闲 GPU 数量降序，再按空闲 CPU 降序
         available_nodes.sort(key=lambda n: (n.gpu_idle, n.cpu_idle), reverse=True)
@@ -573,7 +647,7 @@ def check_partition_resources(
         # CPU 请求：按空闲 CPU 降序
         available_nodes.sort(key=lambda n: n.cpu_idle, reverse=True)
 
-    # 4. 计算推荐的 CPU 数量
+    # 5. 计算推荐的 CPU 数量
     best_node = available_nodes[0] if available_nodes else None
     if best_node:
         if gpu_count > 0:
@@ -589,7 +663,7 @@ def check_partition_resources(
     else:
         recommended_cpus = 1
 
-    # 5. 生成消息
+    # 6. 生成消息
     if available_nodes:
         message = f"找到 {len(available_nodes)} 个可用节点"
     elif nodes_info:
@@ -606,7 +680,7 @@ def check_partition_resources(
     else:
         message = f"分区 {partition} 没有符合条件的节点"
 
-    # 6. 估算等待时间（仅当资源不足时）
+    # 7. 估算等待时间（仅当资源不足时）
     wait_estimate = None
     if not available_nodes:
         wait_estimate = _estimate_wait_time(executor, partition)
