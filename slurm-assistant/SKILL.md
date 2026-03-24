@@ -120,10 +120,34 @@ uv run python "$SCRIPT" init --authorize
 
 ---
 
-## 脚本路径（固定）
+## 脚本路径检测
 
+脚本位于 skill 目录的 `scripts/slurm-cli.py`。AI 通过以下方式确定完整路径：
+
+**方法 1：让脚本自检（推荐）**
 ```bash
-SCRIPT=~/.claude/skills/slurm-assistant/scripts/slurm-cli.py
+# 尝试常见位置
+for dir in ~/.claude/skills ~/.openclaw/skills; do
+  if [ -f "$dir/slurm-assistant/scripts/slurm-cli.py" ]; then
+    SCRIPT="$dir/slurm-assistant/scripts/slurm-cli.py"
+    break
+  fi
+done
+
+# 或直接运行 path 命令获取路径信息
+uv run python "$SCRIPT" path --json
+```
+
+**方法 2：常见安装位置**
+| Agent | 安装目录 |
+|-------|---------|
+| Claude Code | `~/.claude/skills/slurm-assistant/` |
+| OpenCLAW | `~/.openclaw/skills/slurm-assistant/` |
+| 自定义 | 用户指定位置 |
+
+**确定路径后：**
+```bash
+SCRIPT=<检测到的完整路径>
 ```
 
 ## Python 运行命令

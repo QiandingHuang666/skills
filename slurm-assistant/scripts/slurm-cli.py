@@ -16,11 +16,52 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-# 全局配置路径（固定全局安装）
-SKILL_DIR = Path.home() / ".claude" / "skills" / "slurm-assistant"
-CONFIG_FILE = SKILL_DIR / "config.json"
-JOBS_FILE = SKILL_DIR / "jobs.json"
-SETTINGS_FILE = Path.home() / ".claude" / "settings.json"
+# ============================================================================
+# 动态路径检测（支持多 Agent CLI）
+# ============================================================================
+
+def get_skill_dir() -> Path:
+    """自动检测 skill 目录位置（基于脚本自身位置）"""
+    script_path = Path(__file__).resolve()
+    # 脚本在 scripts/ 子目录下，skill 目录是其父目录
+    return script_path.parent.parent
+
+
+def get_config_dir() -> Path:
+    """获取配置目录（优先使用已存在的配置，其次 XDG 标准路径）"""
+    skill_dir = get_skill_dir()
+
+    # 1. 如果 skill 目录下已有配置文件，继续使用（便携式/向后兼容）
+    skill_config = skill_dir / "config.json"
+    if skill_config.exists():
+        return skill_dir
+
+    # 2. 使用 XDG 标准路径（配置与代码分离）
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        return Path(xdg_config) / "slurm-assistant"
+    return Path.home() / ".config" / "slurm-assistant"
+
+
+def get_settings_file() -> Path:
+    """获取 Agent settings.json 路径（支持多 Agent CLI）"""
+    candidates = [
+        Path.home() / ".claude" / "settings.json",      # Claude Code
+        Path.home() / ".openclaw" / "settings.json",    # OpenCLAW
+    ]
+    for p in candidates:
+        if p.parent.exists():
+            return p
+    # 默认返回第一个（兼容现有行为）
+    return candidates[0]
+
+
+# 全局路径（动态计算）
+SKILL_DIR = get_skill_dir()
+CONFIG_DIR = get_config_dir()
+CONFIG_FILE = CONFIG_DIR / "config.json"
+JOBS_FILE = CONFIG_DIR / "jobs.json"
+SETTINGS_FILE = get_settings_file()
 
 
 class Colors:
@@ -80,7 +121,7 @@ class ConfigManager:
 
     def save(self):
         """保存配置"""
-        SKILL_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(self.config, indent=2, ensure_ascii=False))
 
     def is_configured(self) -> bool:
@@ -1183,7 +1224,7 @@ def cmd_submit(args):
 
 def _record_job(job_id: str, script: str):
     """记录作业到历史"""
-    SKILL_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     jobs_data = {"jobs": []}
     if JOBS_FILE.exists():
         try:
@@ -1452,6 +1493,28 @@ def cmd_exec(args):
         print(output)
 
 
+def cmd_path(args):
+    """打印脚本和配置路径信息"""
+    paths = {
+        "script": str(Path(__file__).resolve()),
+        "skill_dir": str(SKILL_DIR),
+        "config_dir": str(CONFIG_DIR),
+        "config_file": str(CONFIG_FILE),
+        "jobs_file": str(JOBS_FILE),
+        "settings_file": str(SETTINGS_FILE) if SETTINGS_FILE else None,
+    }
+
+    if args.json:
+        print(json.dumps(paths, indent=2))
+    else:
+        print(f"Script:      {paths['script']}")
+        print(f"Skill Dir:   {paths['skill_dir']}")
+        print(f"Config Dir:  {paths['config_dir']}")
+        print(f"Config:      {paths['config_file']}")
+        print(f"Jobs:        {paths['jobs_file']}")
+        print(f"Settings:    {paths['settings_file'] or '(no agent detected)'}")
+
+
 # ============================================================================
 # 主函数
 # ============================================================================
@@ -1556,6 +1619,10 @@ def main():
     exec_parser = subparsers.add_parser("exec", help="在集群上执行命令（统一入口，避免多次授权）")
     exec_parser.add_argument("-c", "--cmd", required=True, help="要执行的命令")
 
+    # path - 打印路径信息
+    path_parser = subparsers.add_parser("path", help="打印脚本和配置路径信息")
+    path_parser.add_argument("--json", action="store_true", help="JSON 格式输出")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1581,6 +1648,7 @@ def main():
         "download": cmd_download,
         "ssh-test": cmd_ssh_test,
         "exec": cmd_exec,
+        "path": cmd_path,
     }
 
     if args.command in cmd_map:
