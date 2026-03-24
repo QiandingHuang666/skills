@@ -372,12 +372,25 @@ class SlurmExecutor:
 
 
 def parse_gpu_gres(gres_str: str) -> Tuple[int, str]:
-    """解析 GRES 字符串，返回 (gpu数量, gpu型号)"""
-    match = re.search(r'gpu(?::(\w+))?:(\d+)', gres_str.lower())
+    """解析 GRES 字符串，
+
+    支持格式：
+    - gpu:a100:4 (带型号)
+    - gpu:4 (不带型号)
+    - gpu:a100:4(SFabric) (带拓扑信息)
+
+    返回 (gpu数量, gpu型号)
+    """
+    # 优先匹配 gpu:type:N 格式（型号不含数字开头）
+    match = re.search(r'gpu:([a-zA-Z_]\w*):(\d+)', gres_str.lower())
     if match:
-        gpu_type = match.group(1) or "unknown"
-        gpu_count = int(match.group(2))
-        return gpu_count, gpu_type
+        return int(match.group(2)), match.group(1)
+
+    # 其次匹配 gpu:N 格式（纯数字）
+    match = re.search(r'gpu:(\d+)', gres_str.lower())
+    if match:
+        return int(match.group(1)), "unknown"
+
     return 0, ""
 
 
@@ -429,8 +442,8 @@ def _get_node_gpu_usage(executor, node_name: str) -> int:
         for line in output.splitlines():
             if not line.strip():
                 continue
-            # 匹配 gpu:xxx:N 或 gpu:N 格式
-            match = re.search(r'gpu(?::\w+)?:?(\d+)', line, re.IGNORECASE)
+            # 匹配 gpu:xxx:N 或 gpu:N 格式（与 _show_gpu_status 保持一致）
+            match = re.search(r'gpu:\w*:?(\d+)', line.lower())
             if match:
                 total_used += int(match.group(1))
         return total_used
