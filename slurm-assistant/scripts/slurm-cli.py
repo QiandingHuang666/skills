@@ -49,6 +49,7 @@ def get_settings_file() -> Path:
     candidates = [
         Path.home() / ".claude" / "settings.json",      # Claude Code
         Path.home() / ".openclaw" / "settings.json",    # OpenCLAW
+        Path.home() / ".codex" / "settings.json",       # Codex CLI
     ]
     for p in candidates:
         if p.parent.exists():
@@ -63,6 +64,22 @@ CONFIG_DIR = get_config_dir()
 CONFIG_FILE = CONFIG_DIR / "config.json"
 JOBS_FILE = CONFIG_DIR / "jobs.json"
 SETTINGS_FILE = get_settings_file()
+
+
+# ============================================================================
+# Agent CLI 检测
+# ============================================================================
+
+def detect_current_agent_name() -> str:
+    """检测当前 Agent CLI 名称"""
+    # 按优先级检测
+    if (Path.home() / ".claude").exists():
+        return "claude-code"
+    elif (Path.home() / ".codex").exists():
+        return "codex"
+    elif (Path.home() / ".openclaw").exists():
+        return "openclaw"
+    return "unknown"
 
 
 class Colors:
@@ -134,67 +151,33 @@ class ConfigManager:
     def get_cluster_info(self) -> Dict[str, Any]:
         return self.config.get("cluster", {})
 
-    def is_auto_exec_authorized(self) -> bool:
-        """检查是否已授权自动执行（从全局 settings.json 读取）"""
-        if not SETTINGS_FILE.exists():
-            return False
+    def get_authorized_agents(self) -> List[str]:
+        """获取已授权的 Agent 列表"""
+        return self.config.get("authorized_agents", [])
 
-        try:
-            settings = json.loads(SETTINGS_FILE.read_text())
-            permissions = settings.get("permissions", {})
-            allow_list = permissions.get("allow", [])
+    def is_current_agent_authorized(self) -> bool:
+        """检查当前 Agent 是否已授权"""
+        agent_name = detect_current_agent_name()
+        return agent_name in self.get_authorized_agents()
 
-            # 检查是否有 slurm-cli.py 的授权规则
-            script_path = str(SKILL_DIR / "scripts" / "slurm-cli.py")
-            for rule in allow_list:
-                if script_path in rule or "slurm-cli.py" in rule:
-                    return True
-            return False
-        except:
-            return False
+    def authorize_current_agent(self):
+        """授权当前 Agent"""
+        agent_name = detect_current_agent_name()
+        authorized = self.get_authorized_agents()
+        if agent_name not in authorized:
+            authorized.append(agent_name)
+            self.config["authorized_agents"] = authorized
+            self._save()
 
-    def set_auto_exec_authorized(self, authorized: bool):
-        """设置自动执行授权状态（写入全局 settings.json）"""
-        # 确保目录存在
-        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        # 读取现有设置
-        if SETTINGS_FILE.exists():
-            try:
-                settings = json.loads(SETTINGS_FILE.read_text())
-            except:
-                settings = {}
-        else:
-            settings = {}
-
-        # 更新 permissions
-        if "permissions" not in settings:
-            settings["permissions"] = {}
-        if "allow" not in settings["permissions"]:
-            settings["permissions"]["allow"] = []
-
-        script_path = str(SKILL_DIR / "scripts" / "slurm-cli.py")
-
-        if authorized:
-            # 添加授权规则（如果不存在）
-            rules = settings["permissions"]["allow"]
-            needed_rules = [
-                f"Bash(uv run python {script_path}*)",
-                f"Bash(python3 {script_path}*)",
-                f"Bash(python {script_path}*)"
-            ]
-            for rule in needed_rules:
-                if rule not in rules:
-                    rules.append(rule)
-        else:
-            # 移除授权规则
-            settings["permissions"]["allow"] = [
-                rule for rule in settings["permissions"]["allow"]
-                if "slurm-cli.py" not in rule
-            ]
-
-        # 保存设置
-        SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=False))
+    def unauthorize_agent(self, agent_name: str = None):
+        """取消指定 Agent 的授权（默认当前 Agent）"""
+        if agent_name is None:
+            agent_name = detect_current_agent_name()
+        authorized = self.get_authorized_agents()
+        if agent_name in authorized:
+            authorized.remove(agent_name)
+            self.config["authorized_agents"] = authorized
+            self._save()
 
 
 class SlurmExecutor:
@@ -435,7 +418,7 @@ def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> 
     """
     使用 scontrol show node 获取节点信息（准确的 GPU 分配信息）
 
-    返回 NodeResourceInfo 列表
+    返回 NodeResourceInfo 列表（排除 DRAIN 状态节点）
     """
     output = executor.run("scontrol show node")
 
@@ -447,6 +430,7 @@ def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> 
     current_cpu_alloc = None
     current_cpu_total = None
     current_mem = None
+    current_state = None
 
     for line in output.splitlines():
         line = line.strip()
@@ -454,36 +438,42 @@ def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> 
         # NodeName 行，开始新节点
         if line.startswith('NodeName='):
             # 保存上一个节点的信息
-            if current_node:
-                # 解析 GPU 信息
-                gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
+            if current_node and current_state:
+                # 跳过 DRAIN 状态节点
+                if 'DRAIN' in current_state.upper():
+                    # 重置并跳过
+                    current_node = None
+                    current_state = None
+                else:
+                    # 解析 GPU 信息
+                    gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
 
-                # 从 AllocTRES 解析已分配 GPU
-                gpu_alloc = 0
-                if current_alloc_tres:
-                    match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
-                    if match:
-                        gpu_alloc = int(match.group(1))
+                    # 从 AllocTRES 解析已分配 GPU
+                    gpu_alloc = 0
+                    if current_alloc_tres:
+                        match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+                        if match:
+                            gpu_alloc = int(match.group(1))
 
-                # 解析 CPU 信息
-                cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
-                cpu_t = int(current_cpu_total) if current_cpu_total else 0
-                cpu_i = cpu_t - cpu_a
+                    # 解析 CPU 信息
+                    cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
+                    cpu_t = int(current_cpu_total) if current_cpu_total else 0
+                    cpu_i = cpu_t - cpu_a
 
-                # 计算 cpus_per_gpu
-                cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
+                    # 计算 cpus_per_gpu
+                    cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
 
-                nodes.append(NodeResourceInfo(
-                    node_name=current_node,
-                    partition=current_partition or 'unknown',
-                    gpu_total=gpu_total,
-                    gpu_idle=max(0, gpu_total - gpu_alloc),
-                    gpu_type=gpu_type.upper() if gpu_type else 'N/A',
-                    cpu_total=cpu_t,
-                    cpu_idle=cpu_i,
-                    mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
-                    cpus_per_gpu=cpus_per_gpu
-                ))
+                    nodes.append(NodeResourceInfo(
+                        node_name=current_node,
+                        partition=current_partition or 'unknown',
+                        gpu_total=gpu_total,
+                        gpu_idle=max(0, gpu_total - gpu_alloc),
+                        gpu_type=gpu_type.upper() if gpu_type else 'N/A',
+                        cpu_total=cpu_t,
+                        cpu_idle=cpu_i,
+                        mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
+                        cpus_per_gpu=cpus_per_gpu
+                    ))
 
             # 解析新节点
             match = re.search(r'NodeName=(\S+)', line)
@@ -494,6 +484,11 @@ def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> 
             current_cpu_alloc = None
             current_cpu_total = None
             current_mem = None
+            current_state = None
+
+        # State 行
+        elif line.startswith('State='):
+            current_state = line.split('=', 1)[1]
 
         # Gres 行
         elif line.startswith('Gres='):
@@ -526,31 +521,33 @@ def _get_nodes_info_from_scontrol(executor, partition: Optional[str] = None) -> 
                 current_mem = match.group(1)
 
     # 处理最后一个节点
-    if current_node:
-        gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
-        gpu_alloc = 0
-        if current_alloc_tres:
-            match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
-            if match:
-                gpu_alloc = int(match.group(1))
+    if current_node and current_state:
+        # 跳过 DRAIN 状态节点
+        if 'DRAIN' not in current_state.upper():
+            gpu_total, gpu_type = parse_gpu_gres(current_gres) if current_gres else (0, '')
+            gpu_alloc = 0
+            if current_alloc_tres:
+                match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+                if match:
+                    gpu_alloc = int(match.group(1))
 
-        cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
-        cpu_t = int(current_cpu_total) if current_cpu_total else 0
-        cpu_i = cpu_t - cpu_a
+            cpu_a = int(current_cpu_alloc) if current_cpu_alloc else 0
+            cpu_t = int(current_cpu_total) if current_cpu_total else 0
+            cpu_i = cpu_t - cpu_a
 
-        cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
+            cpus_per_gpu = cpu_t // max(gpu_total, 1) if gpu_total > 0 else cpu_t
 
-        nodes.append(NodeResourceInfo(
-            node_name=current_node,
-            partition=current_partition or 'unknown',
-            gpu_total=gpu_total,
-            gpu_idle=max(0, gpu_total - gpu_alloc),
-            gpu_type=gpu_type.upper() if gpu_type else 'N/A',
-            cpu_total=cpu_t,
-            cpu_idle=cpu_i,
-            mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
-            cpus_per_gpu=cpus_per_gpu
-        ))
+            nodes.append(NodeResourceInfo(
+                node_name=current_node,
+                partition=current_partition or 'unknown',
+                gpu_total=gpu_total,
+                gpu_idle=max(0, gpu_total - gpu_alloc),
+                gpu_type=gpu_type.upper() if gpu_type else 'N/A',
+                cpu_total=cpu_t,
+                cpu_idle=cpu_i,
+                mem_total=int(current_mem) if current_mem and current_mem.isdigit() else 0,
+                cpus_per_gpu=cpus_per_gpu
+            ))
 
     # 过滤分区
     if partition:
@@ -837,13 +834,13 @@ def cmd_init(args):
 
     # 处理授权/取消授权
     if args.authorize:
-        config.set_auto_exec_authorized(True)
-        print_success("Auto-execution authorized")
+        config.authorize_current_agent()
+        print_success(f"Agent '{detect_current_agent_name()}' authorized")
         return
 
     if args.unauthorize:
-        config.set_auto_exec_authorized(False)
-        print_info("Auto-execution authorization revoked")
+        config.unauthorize_agent()
+        print_info(f"Agent '{detect_current_agent_name()}' authorization revoked")
         return
 
     if args.check:
@@ -854,7 +851,9 @@ def cmd_init(args):
             "ssh_key_configured": False,
             "ssh_connection_ok": False,
             "config_valid": False,
-            "auto_exec_authorized": config.is_auto_exec_authorized()
+            "current_agent": detect_current_agent_name(),
+            "authorized_agents": config.get_authorized_agents(),
+            "current_agent_authorized": config.is_current_agent_authorized()
         }
 
         # 检查本地 Slurm
@@ -1913,14 +1912,14 @@ def main():
     init_parser.add_argument("--check", action="store_true")
     init_parser.add_argument("--output-json", action="store_true")
     init_parser.add_argument("--fast", action="store_true", help="快速模式：跳过 SSH 连接测试")
-    init_parser.add_argument("--authorize", action="store_true", help="授权自动执行命令")
-    init_parser.add_argument("--unauthorize", action="store_true", help="取消自动执行授权")
     init_parser.add_argument("--mode", choices=["local", "remote"])
     init_parser.add_argument("--cluster-name")
     init_parser.add_argument("--host")
     init_parser.add_argument("--port", type=int, default=22)
     init_parser.add_argument("--username")
     init_parser.add_argument("--jump-host")
+    init_parser.add_argument("--authorize", action="store_true", help="授权当前 Agent")
+    init_parser.add_argument("--unauthorize", action="store_true", help="取消当前 Agent 授权")
 
     # status
     status_parser = subparsers.add_parser("status", help="查看资源状态")

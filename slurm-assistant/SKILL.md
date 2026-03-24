@@ -109,39 +109,6 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
 }
 ```
 
-#### 场景 C：已配置且有效 (`configured: true, config_valid: true`)
-
-配置正确，可以继续检查授权状态。
-
-#### 场景 D：授权状态检查（所有场景必查）
-
-**重要：无论配置状态如何，都必须检查 `auto_exec_authorized` 字段！**
-
-如果 `auto_exec_authorized: false`，必须询问用户：
-
-```json
-{
-  "questions": [
-    {
-      "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
-      "options": [
-        "是，授权自动执行（推荐）",
-        "否，每次执行前确认"
-      ]
-    }
-  ]
-}
-```
-
-**用户选择"是"时：**
-执行授权命令：
-```bash
-uv run python "$SCRIPT" init --authorize
-```
-
-**用户选择"否"时：**
-无需操作，继续正常流程（每次执行命令时会询问授权）
-
 ---
 
 ## 实例连接流程
@@ -196,36 +163,6 @@ uv run python "$SCRIPT" ssh-test
 ```
 
 ---
-
-## 脚本路径检测
-
-脚本位于 skill 目录的 `scripts/slurm-cli.py`。AI 通过以下方式确定完整路径：
-
-**方法 1：让脚本自检（推荐）**
-```bash
-# 尝试常见位置
-for dir in ~/.claude/skills ~/.openclaw/skills; do
-  if [ -f "$dir/slurm-assistant/scripts/slurm-cli.py" ]; then
-    SCRIPT="$dir/slurm-assistant/scripts/slurm-cli.py"
-    break
-  fi
-done
-
-# 或直接运行 path 命令获取路径信息
-uv run python "$SCRIPT" path --json
-```
-
-**方法 2：常见安装位置**
-| Agent | 安装目录 |
-|-------|---------|
-| Claude Code | `~/.claude/skills/slurm-assistant/` |
-| OpenCLAW | `~/.openclaw/skills/slurm-assistant/` |
-| 自定义 | 用户指定位置 |
-
-**确定路径后：**
-```bash
-SCRIPT=<检测到的完整路径>
-```
 
 ## Python 运行命令
 
