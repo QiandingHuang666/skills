@@ -14,6 +14,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 # ============================================================================
@@ -388,47 +389,223 @@ def parse_cpu_alloc(alloc_str: str) -> Tuple[int, int, int, int]:
     return 0, 0, 0, 0
 
 
-def calculate_optimal_cpus(executor: SlurmExecutor, partition: str, gres: Optional[str] = None) -> int:
+# ============================================================================
+# 资源检查数据结构
+# ============================================================================
+
+@dataclass
+class NodeResourceInfo:
+    """节点资源信息"""
+    node_name: str
+    partition: str
+    gpu_total: int
+    gpu_idle: int
+    gpu_type: str
+    cpu_total: int
+    cpu_idle: int
+    mem_total: int  # MB
+    cpus_per_gpu: int  # = cpu_total // max(gpu_total, 1)
+
+
+@dataclass
+class ResourceCheckResult:
+    """资源检查结果"""
+    has_available: bool
+    available_nodes: List[NodeResourceInfo]  # 按空闲资源排序
+    best_node: Optional[NodeResourceInfo]
+    recommended_cpus: int
+    wait_estimate: Optional[str]
+    message: str
+
+
+def _get_node_gpu_usage(executor, node_name: str) -> int:
+    """查询节点上已使用的 GPU 数量"""
+    if not validate_node_name(node_name):
+        return 0
+
+    try:
+        output = executor.run(f"squeue -w {node_name} -t RUNNING -h -o '%b'")
+        total_used = 0
+        for line in output.splitlines():
+            if not line.strip():
+                continue
+            # 匹配 gpu:xxx:N 或 gpu:N 格式
+            match = re.search(r'gpu(?::\w+)?:?(\d+)', line, re.IGNORECASE)
+            if match:
+                total_used += int(match.group(1))
+        return total_used
+    except Exception:
+        return 0
+
+
+def _estimate_wait_time(executor, partition: str) -> Optional[str]:
+    """估算排队等待时间"""
+    try:
+        output = executor.run(f"squeue -p {partition} -t PENDING -h -o '%i'")
+        pending_count = len([l for l in output.splitlines() if l.strip()])
+
+        if pending_count == 0:
+            return "可能很快（无排队作业）"
+        elif pending_count < 5:
+            return f"预计 {pending_count * 5}-{pending_count * 15} 分钟"
+        else:
+            return f"预计较长时间（{pending_count} 个作业排队中）"
+    except Exception:
+        return None
+
+
+def check_partition_resources(
+    executor,
+    partition: str,
+    gpu_count: int = 0,
+    gpu_type: Optional[str] = None,
+    min_cpus: int = 1
+) -> ResourceCheckResult:
     """
-    智能计算合理的 CPU 数量
-    返回: min(节点剩余 CPU 数, 节点 CPU 总数/节点显卡总数)
+    检查分区资源可用性
+
+    参数:
+        executor: Slurm 执行器
+        partition: 分区名称
+        gpu_count: 需要的 GPU 数量（0 表示纯 CPU）
+        gpu_type: GPU 型号要求（可选，如 'a100', 'v100'）
+        min_cpus: 最少需要的 CPU 数量
+
+    返回:
+        ResourceCheckResult 包含资源检查结果和建议
     """
-    # 获取分区节点信息
-    cmd = f"sinfo -p {partition} -N -h -o '%N|%C|%G'"
-    output = executor.run(cmd)
-    
+    # 1. 获取分区节点信息
+    cmd = f"sinfo -p {partition} -N -h -o '%N|%C|%G|%m|%T'"
+    try:
+        output = executor.run(cmd)
+    except Exception as e:
+        return ResourceCheckResult(
+            has_available=False,
+            available_nodes=[],
+            best_node=None,
+            recommended_cpus=1,
+            wait_estimate=None,
+            message=f"查询分区信息失败: {e}"
+        )
+
     nodes_info = []
     for line in output.splitlines():
         if not line.strip():
             continue
         parts = line.split('|')
-        if len(parts) >= 3:
-            node, cpu, gres = parts[0], parts[1], parts[2]
-            cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu)
-            gpu_count, gpu_type = parse_gpu_gres(gres)
-            
-            nodes_info.append({
-                'cpu_idle': cpu_i,
-                'cpu_total': cpu_t,
-                'gpu_total': gpu_count
-            })
-    
+        if len(parts) < 5:
+            continue
+
+        node_name, cpu_alloc, gres, mem, state = parts[0], parts[1], parts[2], parts[3], parts[4]
+
+        # 跳过不可用状态的节点
+        if 'down' in state.lower() or 'drain' in state.lower():
+            continue
+
+        # 解析 CPU 分配 (A/I/O/T)
+        cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu_alloc)
+        # 解析 GPU 信息
+        node_gpu_total, node_gpu_type = parse_gpu_gres(gres)
+
+        # 如果指定了 GPU 型号，过滤不符合的节点
+        if gpu_type and gpu_type.lower() not in node_gpu_type.lower():
+            continue
+
+        # 查询该节点上正在运行的作业占用的 GPU
+        gpu_used = _get_node_gpu_usage(executor, node_name)
+        gpu_idle = max(0, node_gpu_total - gpu_used)
+
+        # 计算每 GPU 对应的 CPU 数量
+        cpus_per_gpu = cpu_t // max(node_gpu_total, 1) if node_gpu_total > 0 else cpu_t
+
+        nodes_info.append(NodeResourceInfo(
+            node_name=node_name,
+            partition=partition,
+            gpu_total=node_gpu_total,
+            gpu_idle=gpu_idle,
+            gpu_type=node_gpu_type.upper() if node_gpu_type else 'N/A',
+            cpu_total=cpu_t,
+            cpu_idle=cpu_i,
+            mem_total=int(mem) if mem.isdigit() else 0,
+            cpus_per_gpu=cpus_per_gpu
+        ))
+
     if not nodes_info:
-        return 1  # 默认值
-    
-    # 计算 GPU 节点的平均 CPU/GPU 比例
-    gpu_nodes = [n for n in nodes_info if n['gpu_total'] > 0]
-    
-    if gpu_nodes:
-        # GPU 节点：计算 CPU 总数 / GPU 总数，取平均
-        avg_cpus_per_gpu = sum(n['cpu_total'] // max(n['gpu_total'], 1) for n in gpu_nodes) // len(gpu_nodes)
-        # 取最小的空闲 CPU 数
-        min_idle_cpu = min(n['cpu_idle'] for n in gpu_nodes)
-        
-        return max(1, min(min_idle_cpu, avg_cpus_per_gpu))
+        return ResourceCheckResult(
+            has_available=False,
+            available_nodes=[],
+            best_node=None,
+            recommended_cpus=1,
+            wait_estimate=None,
+            message=f"分区 {partition} 没有找到符合条件的节点"
+        )
+
+    # 2. 筛选满足条件的可用节点
+    available_nodes = []
+    for node in nodes_info:
+        if gpu_count > 0:
+            # GPU 请求：节点空闲 GPU >= 请求 GPU 数量，且有空闲 CPU
+            if node.gpu_idle >= gpu_count and node.cpu_idle >= min_cpus:
+                available_nodes.append(node)
+        else:
+            # 纯 CPU 请求（GPU 节点也可用）
+            if node.cpu_idle >= min_cpus:
+                available_nodes.append(node)
+
+    # 3. 按空闲资源排序（优先选择空闲资源最充足的节点）
+    if gpu_count > 0:
+        # GPU 请求：按空闲 GPU 数量降序，再按空闲 CPU 降序
+        available_nodes.sort(key=lambda n: (n.gpu_idle, n.cpu_idle), reverse=True)
     else:
-        # CPU 节点：使用最小的空闲 CPU 数
-        return max(1, min(n['cpu_idle'] for n in nodes_info))
+        # CPU 请求：按空闲 CPU 降序
+        available_nodes.sort(key=lambda n: n.cpu_idle, reverse=True)
+
+    # 4. 计算推荐的 CPU 数量
+    best_node = available_nodes[0] if available_nodes else None
+    if best_node:
+        if gpu_count > 0:
+            # GPU 节点：推荐 CPU = min(空闲CPU, 每GPU对应CPU * 请求GPU数)
+            recommended_cpus = min(
+                best_node.cpu_idle,
+                best_node.cpus_per_gpu * gpu_count
+            )
+        else:
+            # CPU 节点：使用空闲 CPU
+            recommended_cpus = best_node.cpu_idle
+        recommended_cpus = max(1, recommended_cpus)
+    else:
+        recommended_cpus = 1
+
+    # 5. 生成消息
+    if available_nodes:
+        message = f"找到 {len(available_nodes)} 个可用节点"
+    elif nodes_info:
+        # 有节点但资源不足
+        if gpu_count > 0:
+            total_gpu_idle = sum(n.gpu_idle for n in nodes_info)
+            if total_gpu_idle < gpu_count:
+                message = f"资源不足：分区共有 {total_gpu_idle} 张空闲 GPU，但请求 {gpu_count} 张"
+            else:
+                message = f"资源不足：空闲 GPU 分散在多个节点，无单个节点满足 {gpu_count} 张 GPU 的需求"
+        else:
+            max_idle = max(n.cpu_idle for n in nodes_info)
+            message = f"资源不足：节点最大空闲 CPU 为 {max_idle}，但请求 {min_cpus}"
+    else:
+        message = f"分区 {partition} 没有符合条件的节点"
+
+    # 6. 估算等待时间（仅当资源不足时）
+    wait_estimate = None
+    if not available_nodes:
+        wait_estimate = _estimate_wait_time(executor, partition)
+
+    return ResourceCheckResult(
+        has_available=len(available_nodes) > 0,
+        available_nodes=available_nodes,
+        best_node=best_node,
+        recommended_cpus=recommended_cpus,
+        wait_estimate=wait_estimate,
+        message=message
+    )
 
 
 # ============================================================================
@@ -1121,7 +1298,7 @@ def cmd_find_gpu(args):
 # ============================================================================
 
 def cmd_alloc(args):
-    """申请交互式资源"""
+    """申请交互式资源（优化版）"""
     config = ConfigManager()
     if not config.is_configured():
         die("Please run 'init' first to configure")
@@ -1129,47 +1306,129 @@ def cmd_alloc(args):
     if not args.partition:
         die("Must specify partition (-p)")
 
-    # 本地模式下，alloc 是交互式命令，不适合脚本调用
+    executor = SlurmExecutor(config)
+
+    # 1. 解析用户需求
+    gpu_count = 0
+    gpu_type = None
+    if args.gres:
+        gpu_count, gpu_type = parse_gpu_gres(args.gres)
+
+    min_cpus = max(1, args.cpus) if args.cpus > 0 else 1
+
+    # 2. 检查资源可用性
+    print_info(f"检查分区 {args.partition} 的资源可用性...")
+    check_result = check_partition_resources(
+        executor,
+        args.partition,
+        gpu_count=gpu_count,
+        gpu_type=gpu_type,
+        min_cpus=min_cpus
+    )
+
+    # 3. 打印资源状态
+    _print_resource_status(check_result)
+
+    # 4. 处理资源不足的情况
+    if not check_result.has_available:
+        print_warning(check_result.message)
+        if check_result.wait_estimate:
+            print_info(f"等待时间估计: {check_result.wait_estimate}")
+
+        print_info("您可以：")
+        print("  1. 等待资源释放（继续提交，进入排队）")
+        print("  2. 减少资源请求（如减少 GPU 数量）")
+        print("  3. 尝试其他分区")
+
+        if args.check_only:
+            return
+
+        # 让用户决定是否继续排队
+        print_info("继续申请资源（将进入排队）...")
+    else:
+        if args.check_only:
+            print_success("资源检查完成，有空闲资源可用")
+            return
+
+    # 5. 确定使用的节点
+    best_node = check_result.best_node
+    if args.nodelist:
+        # 用户指定了节点，使用用户的
+        best_node = None  # 不自动选择
+    elif best_node:
+        print_info(f"推荐节点: {best_node.node_name}")
+
+    # 6. 计算 CPU 数量
+    if args.cpus > 0:
+        cpus = args.cpus
+        print_info(f"使用指定的 CPU 数量: {cpus}")
+    else:
+        cpus = check_result.recommended_cpus
+        print_info(f"自动计算 CPU 数量: {cpus}")
+
+    # 7. 本地模式特殊处理
     if config.get_mode() == "local":
         print_warning("Local mode: salloc is an interactive command")
-        print_info("Please run the following command directly in your terminal:")
-        cpus = args.cpus if args.cpus > 1 else "自动"
-        cmd = f"salloc -p {args.partition}"
-        if args.cpus > 1:
-            cmd += f" --cpus-per-task={args.cpus}"
-        if args.gres:
-            cmd += f" --gres={args.gres}"
-        cmd += f" --time={args.time}"
-        if args.max_wait:
-            cmd += f" --wait={args.max_wait}"
+        print_info("请在终端直接运行以下命令:")
+        cmd = _build_salloc_command(args, cpus, best_node)
         print(f"  {cmd}")
         return
 
-    executor = SlurmExecutor(config)
-
-    # 智能计算 CPU 数量（如果未指定）
-    cpus = args.cpus
-    if cpus == 1:
-        # 尝试智能计算
-        optimal_cpus = calculate_optimal_cpus(executor, args.partition, args.gres)
-        if optimal_cpus > 1:
-            cpus = optimal_cpus
-            print_info(f"Auto-calculated CPU count: {cpus}")
-
-    # 构建命令
-    cmd = f"salloc -p {args.partition} --cpus-per-task={cpus} --time={args.time}"
-
-    if args.gres:
-        cmd += f" --gres={args.gres}"
-
-    if args.max_wait:
-        # 添加等待时间限制
-        cmd += f" --wait={args.max_wait}"
-        print_info(f"Max wait time: {args.max_wait}")
-
-    print_info(f"Allocating resources: {cmd}")
+    # 8. 构建并执行 salloc 命令
+    cmd = _build_salloc_command(args, cpus, best_node)
+    print_info(f"执行命令: {cmd}")
     output = executor.run(cmd)
     print(output)
+
+
+def _print_resource_status(result):
+    """打印资源状态"""
+    if result.available_nodes:
+        print(f"\n可用节点 ({len(result.available_nodes)} 个):")
+        print(f"{'节点':<20} {'GPU空闲/总数':<14} {'CPU空闲/总数':<14} {'GPU型号':<12}")
+        print("-" * 70)
+        for node in result.available_nodes[:5]:  # 最多显示 5 个
+            print(f"{node.node_name:<20} "
+                  f"{node.gpu_idle}/{node.gpu_total:<12} "
+                  f"{node.cpu_idle}/{node.cpu_total:<12} "
+                  f"{node.gpu_type:<12}")
+        if len(result.available_nodes) > 5:
+            print(f"... 还有 {len(result.available_nodes) - 5} 个节点")
+        print()
+    else:
+        print_warning("没有找到可用节点")
+
+
+def _build_salloc_command(args, cpus: int, best_node=None) -> str:
+    """构建 salloc 命令"""
+    cmd_parts = [f"salloc -p {args.partition}"]
+
+    # CPU 数量
+    cmd_parts.append(f"--cpus-per-task={cpus}")
+
+    # GRES（GPU）
+    if args.gres:
+        cmd_parts.append(f"--gres={args.gres}")
+
+    # 时间限制（仅当用户明确指定时才添加）
+    if args.time:
+        cmd_parts.append(f"--time={args.time}")
+
+    # 内存（仅当用户明确指定时才添加）
+    if args.mem:
+        cmd_parts.append(f"--mem={args.mem}")
+
+    # 节点选择
+    if args.nodelist:
+        cmd_parts.append(f"-w {args.nodelist}")
+    elif best_node:
+        cmd_parts.append(f"-w {best_node.node_name}")
+
+    # 最大等待时间
+    if args.max_wait:
+        cmd_parts.append(f"--wait={args.max_wait}")
+
+    return " ".join(cmd_parts)
 
 
 def cmd_release(args):
@@ -1565,9 +1824,12 @@ def main():
     # alloc
     alloc_parser = subparsers.add_parser("alloc", help="申请交互式资源")
     alloc_parser.add_argument("-p", "--partition", required=True, help="分区")
-    alloc_parser.add_argument("-g", "--gres", help="GRES 资源（如 gpu:1）")
-    alloc_parser.add_argument("-c", "--cpus", type=int, default=0, help="CPU 数量（0=自动计算）")
-    alloc_parser.add_argument("-t", "--time", default="1:00:00", help="作业时间限制")
+    alloc_parser.add_argument("-g", "--gres", help="GRES 资源（如 gpu:1, gpu:a100:2）")
+    alloc_parser.add_argument("-c", "--cpus", type=int, default=0, help="CPU 数量（0=自动计算，默认自动）")
+    alloc_parser.add_argument("-t", "--time", default=None, help="时间限制（不指定则使用分区默认值）")
+    alloc_parser.add_argument("--mem", default=None, help="内存需求（如 16G）")
+    alloc_parser.add_argument("-w", "--nodelist", help="指定节点列表")
+    alloc_parser.add_argument("--check-only", action="store_true", help="仅检查资源，不实际申请")
     alloc_parser.add_argument("--max-wait", help="最大等待时间（如 10:00 或 5 表示 5 分钟）")
 
     # release
