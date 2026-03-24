@@ -955,73 +955,109 @@ def cmd_status(args):
 
 
 def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
-    """显示 GPU 节点状态"""
-    cmd = "sinfo -N -o '%N|%G|%C|%P'"
-    if partition:
-        cmd += f" -p {partition}"
-    
-    output = executor.run(cmd)
-    
+    """显示 GPU 节点状态（使用 scontrol show node 获取精确 GPU 分配信息）"""
+    # 使用 scontrol show node 获取节点信息
+    output = executor.run("scontrol show node")
+
+    # 解析 scontrol 输出
+    # 格式：
+    # NodeName=gpu-a40-1 Arch=x86_64 CoresPerSocket=1
+    #    Gres=gpu:a40:2
+    #    Partitions=gpu-a40
+    #    AllocTRES=cpu=16,gres/gpu=2
+
     gpu_nodes = []
-    for line in output.splitlines()[1:]:
-        if not line.strip():
-            continue
-        parts = line.split('|')
-        if len(parts) >= 4:
-            node_name, gres, cpu_alloc, part = parts[0], parts[1], parts[2], parts[3]
-            
-            if 'gpu' in gres.lower():
-                gpu_count, gpu_type = parse_gpu_gres(gres)
-                cpu_a, cpu_i, cpu_o, cpu_t = parse_cpu_alloc(cpu_alloc)
-                gpu_nodes.append({
-                    'node': node_name,
-                    'partition': part,
-                    'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
-                    'gpu_total': gpu_count,
-                    'cpu_idle': cpu_i,
-                    'cpu_total': cpu_t,
-                    'cpu_alloc': cpu_a
-                })
-    
+    current_node = None
+    current_gres = None
+    current_alloc_tres = None
+    current_partition = None
+
+    for line in output.splitlines():
+        line = line.strip()
+
+        # NodeName 行，开始新节点
+        if line.startswith('NodeName='):
+            # 保存上一个节点的信息
+            if current_node and current_gres and 'gpu' in current_gres.lower():
+                gpu_total, gpu_type = parse_gpu_gres(current_gres)
+                if gpu_total > 0:
+                    # 从 AllocTRES 解析已分配 GPU
+                    gpu_alloc = 0
+                    if current_alloc_tres:
+                        match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+                        if match:
+                            gpu_alloc = int(match.group(1))
+
+                    gpu_idle = max(0, gpu_total - gpu_alloc)
+                    gpu_nodes.append({
+                        'node': current_node,
+                        'partition': current_partition or 'unknown',
+                        'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
+                        'gpu_total': gpu_total,
+                        'gpu_idle': gpu_idle,
+                        'gpu_alloc': gpu_alloc
+                    })
+
+            # 解析新节点的 NodeName
+            match = re.search(r'NodeName=(\S+)', line)
+            current_node = match.group(1) if match else None
+            current_gres = None
+            current_alloc_tres = None
+            current_partition = None
+
+        # Gres 行
+        elif line.startswith('Gres='):
+            current_gres = line.split('=', 1)[1]
+
+        # Partitions 行
+        elif line.startswith('Partitions='):
+            current_partition = line.split('=', 1)[1]
+
+        # AllocTRES 行
+        elif line.startswith('AllocTRES='):
+            current_alloc_tres = line.split('=', 1)[1]
+
+    # 处理最后一个节点
+    if current_node and current_gres and 'gpu' in current_gres.lower():
+        gpu_total, gpu_type = parse_gpu_gres(current_gres)
+        if gpu_total > 0:
+            gpu_alloc = 0
+            if current_alloc_tres:
+                match = re.search(r'gres/gpu=(\d+)', current_alloc_tres)
+                if match:
+                    gpu_alloc = int(match.group(1))
+
+            gpu_idle = max(0, gpu_total - gpu_alloc)
+            gpu_nodes.append({
+                'node': current_node,
+                'partition': current_partition or 'unknown',
+                'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
+                'gpu_total': gpu_total,
+                'gpu_idle': gpu_idle,
+                'gpu_alloc': gpu_alloc
+            })
+
     if not gpu_nodes:
         print_info("No GPU nodes found")
         return
-    
+
+    # 按分区和节点名排序
     gpu_nodes.sort(key=lambda x: (x['partition'], x['node']))
 
-    # 安全过滤：只允许合法节点名
-    valid_nodes = [n['node'] for n in gpu_nodes if validate_node_name(n['node'])]
-    if not valid_nodes:
-        print_info("No valid GPU nodes found")
+    # 如果指定了分区，过滤
+    if partition:
+        gpu_nodes = [n for n in gpu_nodes if partition in n['partition']]
+
+    if not gpu_nodes:
+        print_info(f"No GPU nodes found in partition {partition}")
         return
 
-    nodes_str = ','.join(valid_nodes)
-    jobs_output = executor.run(f"squeue -t RUNNING -h -o '%N|%b' -w {nodes_str}")
-    
-    node_gpu_used = {}
-    for line in jobs_output.splitlines():
-        if not line.strip():
-            continue
-        parts = line.split('|')
-        if len(parts) >= 2:
-            node = parts[0]
-            gres = parts[1]
-            match = re.search(r'gpu:\w*:?(\d+)', gres.lower())
-            if match:
-                used = int(match.group(1))
-                node_gpu_used[node] = node_gpu_used.get(node, 0) + used
-    
-    print(f"{'Node':<20} {'Partition':<12} {'GPU Idle/Total':<15} {'CPU Idle/Total':<15} {'GPU Type'}")
-    print("-" * 90)
-    
+    print(f"{'Node':<20} {'Partition':<15} {'GPU Idle/Total':<15} {'GPU Type'}")
+    print("-" * 75)
+
     for node in gpu_nodes:
-        node_name = node['node']
-        gpu_used = node_gpu_used.get(node_name, 0)
-        gpu_idle = max(0, node['gpu_total'] - gpu_used)
-        
-        print(f"{node_name:<20} {node['partition']:<12} "
-              f"{gpu_idle}/{node['gpu_total']:<13} "
-              f"{node['cpu_idle']}/{node['cpu_total']:<13} "
+        print(f"{node['node']:<20} {node['partition']:<15} "
+              f"{node['gpu_idle']}/{node['gpu_total']:<13} "
               f"{node['gpu_type']}")
 
 
