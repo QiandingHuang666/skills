@@ -22,6 +22,18 @@ Slurm HPC 集群助手，为高校学生/教师定制，支持本地（集群上
 - SSH 免密登录配置引导
 - 分区硬件配置缓存（避免重复查询）
 - GPU 资源快速查找
+- **智能资源申请**：自动检查资源可用性，计算最优 CPU 数量
+- **实例连接支持**：支持连接 IP 相同、端口不同的实例
+- **多 Agent 支持**：支持 Claude Code、Codex CLI、OpenCLAW
+
+**v0.1.1 新增功能：**
+
+- 使用 `scontrol show node` 获取精确 GPU 分配信息
+- 智能计算推荐 CPU 数量：`min(空闲CPU, CPU/GPU比例 × GPU数量)`
+- 申请前自动检查资源，资源不足时提示排队时间
+- 自动过滤 DRAIN 状态节点
+- 按 Agent 名称记录授权状态
+- 禁止在登录节点进行费资源操作的提示
 
 **适用场景：**
 
@@ -30,6 +42,7 @@ Slurm HPC 集群助手，为高校学生/教师定制，支持本地（集群上
 - 申请交互式开发环境
 - 管理运行中的作业
 - 生成 Slurm 作业脚本
+- 连接手动申请的实例
 
 **使用示例：**
 
@@ -39,16 +52,24 @@ Slurm HPC 集群助手，为高校学生/教师定制，支持本地（集群上
 "申请一个 A100 GPU 节点"
 "我的作业进度怎么样"
 "生成一个 PyTorch 训练脚本"
+"帮我连接实例"（实例端口是 12345）
 ```
 
 ## 安装
 
 ### 全局安装
 
-将 skill 复制到 Claude Code 的全局 skills 目录：
+将 skill 复制到 Agent 的全局 skills 目录：
 
 ```bash
+# Claude Code
 cp -r slurm-assistant ~/.claude/skills/
+
+# Codex CLI
+cp -r slurm-assistant ~/.codex/skills/
+
+# OpenCLAW
+cp -r slurm-assistant ~/.openclaw/skills/
 ```
 
 ### 项目级安装
@@ -83,6 +104,12 @@ cp -r slurm-assistant your-project/.claude/skills/
 
 ## 兼容性
 
+**支持的 Agent CLI：**
+- Claude Code
+- Codex CLI
+- OpenCLAW
+
+**运行环境：**
 - Bash shell
 - uv/uvx（优先）或 python3
 
