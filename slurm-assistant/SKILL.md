@@ -396,16 +396,20 @@ uv run python "$SCRIPT" exec -c <命令>
 **A10 分区使用提示：**
 - A10 分区有严格的空闲自动释放机制
 - 申请资源后如果没有立即运行命令，资源会被自动释放
-- **建议**：申请时直接指定要运行的命令，或使用 `salloc` 后立即 `srun`
+
+**推荐做法：使用 `tmux + sleep` 保持连接**
 
 ```bash
-# 推荐：申请时直接运行命令
-salloc -p gpu-a10 --gres=gpu:1 srun python train.py
-
-# 不推荐：单独申请后可能被释放
+# 方法1：在 tmux 中申请（推荐）
+tmux new -s gzu-a10
 salloc -p gpu-a10 --gres=gpu:1
-# 等待... 资源可能已被自动释放
+# 在 salloc 交互式 shell 中执行命令
+
+# 方法2：申请时直接运行命令
+salloc -p gpu-a10 --gres=gpu:1 srun python train.py
 ```
+
+**原理**：`tmux` 保持会话活跃，`sleep` 娡拟用户活动，避免被判定为空闲而释放。
 - 避免用户手动下载安装 TexLive（非常耗时）
 
 **路径映射（重要）：**
