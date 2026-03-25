@@ -123,11 +123,34 @@ def die(msg: str):
 
 
 class ConfigManager:
-    """配置管理器"""
+    """
+    配置管理器（支持多连接）
+
+    配置文件结构：
+    {
+        "connections": {
+            "conn_name": {
+                "name": "显示名称",
+                "host": "IP或主机名",
+                "port": 22,
+                "username": "用户名",
+                "jump_host": "跳板机",
+                "type": "cluster|instance",  // cluster=集群, instance=实例
+                "parent": "父连接名",  // 仅 instance 类型需要
+                "passwordless": true/false,
+                "created_at": "ISO时间",
+                "last_used": "ISO时间"
+            }
+        },
+        "active_connection": "conn_name",  // 当前活动连接
+        "authorized_agents": [...]
+    }
+    """
 
     def __init__(self):
         self.config: Dict[str, Any] = {}
         self._load()
+        self._migrate_old_config()
 
     def _load(self):
         """加载配置"""
@@ -137,19 +160,155 @@ class ConfigManager:
             except json.JSONDecodeError:
                 self.config = {}
 
+    def _migrate_old_config(self):
+        """迁移旧配置格式到新格式"""
+        # 如果已经有新格式，跳过
+        if "connections" in self.config:
+            return
+
+        # 迁移旧格式
+        if "mode" in self.config and self.config["mode"] == "remote":
+            cluster = self.config.get("cluster", {})
+            if cluster.get("host") and cluster.get("username"):
+                old_conn = {
+                    "name": cluster.get("name", "迁移的连接"),
+                    "host": cluster.get("host", ""),
+                    "port": cluster.get("port", 22),
+                    "username": cluster.get("username", ""),
+                    "jump_host": cluster.get("jump_host", ""),
+                    "type": "cluster",
+                    "parent": None,
+                    "passwordless": None,  # 未知
+                    "created_at": datetime.now().isoformat(),
+                    "last_used": datetime.now().isoformat()
+                }
+                self.config["connections"] = {"migrated": old_conn}
+                self.config["active_connection"] = "migrated"
+                # 保留 authorized_agents
+                self.save()
+                print_info("已迁移旧配置到新格式")
+
     def save(self):
         """保存配置"""
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(self.config, indent=2, ensure_ascii=False))
 
+    # ==================== 连接管理 ====================
+
+    def get_connections(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有连接"""
+        return self.config.get("connections", {})
+
+    def get_connection(self, name: str) -> Optional[Dict[str, Any]]:
+        """获取指定连接"""
+        return self.config.get("connections", {}).get(name)
+
+    def get_active_connection(self) -> Optional[Dict[str, Any]]:
+        """获取当前活动连接"""
+        active_name = self.config.get("active_connection")
+        if active_name:
+            return self.get_connection(active_name)
+        return None
+
+    def get_active_connection_name(self) -> Optional[str]:
+        """获取当前活动连接名称"""
+        return self.config.get("active_connection")
+
+    def set_active_connection(self, name: str) -> bool:
+        """设置活动连接"""
+        if name in self.get_connections():
+            self.config["active_connection"] = name
+            # 更新 last_used
+            self.config["connections"][name]["last_used"] = datetime.now().isoformat()
+            self.save()
+            return True
+        return False
+
+    def add_connection(self, name: str, conn_info: Dict[str, Any]) -> bool:
+        """添加新连接"""
+        if "connections" not in self.config:
+            self.config["connections"] = {}
+
+        # 检查是否已存在
+        if name in self.config["connections"]:
+            return False
+
+        conn_info["created_at"] = datetime.now().isoformat()
+        conn_info["last_used"] = datetime.now().isoformat()
+        self.config["connections"][name] = conn_info
+
+        # 如果是第一个连接，设为活动连接
+        if len(self.config["connections"]) == 1:
+            self.config["active_connection"] = name
+
+        self.save()
+        return True
+
+    def update_connection(self, name: str, conn_info: Dict[str, Any]) -> bool:
+        """更新连接"""
+        if name not in self.get_connections():
+            return False
+
+        # 保留创建时间
+        if "created_at" in self.config["connections"][name]:
+            conn_info["created_at"] = self.config["connections"][name]["created_at"]
+        conn_info["last_used"] = datetime.now().isoformat()
+
+        self.config["connections"][name] = conn_info
+        self.save()
+        return True
+
+    def remove_connection(self, name: str) -> bool:
+        """删除连接"""
+        if name not in self.get_connections():
+            return False
+
+        del self.config["connections"][name]
+
+        # 如果删除的是活动连接，切换到第一个可用连接
+        if self.config.get("active_connection") == name:
+            connections = self.get_connections()
+            if connections:
+                self.config["active_connection"] = list(connections.keys())[0]
+            else:
+                self.config["active_connection"] = None
+
+        self.save()
+        return True
+
+    def update_passwordless_status(self, name: str, status: bool):
+        """更新免密登录状态"""
+        if name in self.get_connections():
+            self.config["connections"][name]["passwordless"] = status
+            self.save()
+
+    # ==================== 兼容旧 API ====================
+
     def is_configured(self) -> bool:
-        return "mode" in self.config
+        """检查是否已配置（兼容旧 API）"""
+        return self.get_active_connection() is not None
 
     def get_mode(self) -> str:
-        return self.config.get("mode", "local")
+        """获取模式（兼容旧 API）"""
+        conn = self.get_active_connection()
+        if conn:
+            return "remote" if conn.get("host") else "local"
+        return "local"
 
     def get_cluster_info(self) -> Dict[str, Any]:
-        return self.config.get("cluster", {})
+        """获取集群信息（兼容旧 API）"""
+        conn = self.get_active_connection()
+        if conn:
+            return {
+                "name": conn.get("name", ""),
+                "host": conn.get("host", ""),
+                "port": conn.get("port", 22),
+                "username": conn.get("username", ""),
+                "jump_host": conn.get("jump_host", "")
+            }
+        return {}
+
+    # ==================== Agent 授权 ====================
 
     def get_authorized_agents(self) -> List[str]:
         """获取已授权的 Agent 列表"""
@@ -1037,11 +1196,14 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
     #    Partitions=gpu-a40
     #    AllocTRES=cpu=16,gres/gpu=2
 
-    gpu_nodes = []
+    available_nodes = []  # 可用节点
+    drain_nodes = []      # 排空节点
+
     current_node = None
     current_gres = None
     current_alloc_tres = None
     current_partition = None
+    current_state = None
 
     for line in output.splitlines():
         line = line.strip()
@@ -1060,14 +1222,21 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
                             gpu_alloc = int(match.group(1))
 
                     gpu_idle = max(0, gpu_total - gpu_alloc)
-                    gpu_nodes.append({
+                    node_info = {
                         'node': current_node,
                         'partition': current_partition or 'unknown',
                         'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
                         'gpu_total': gpu_total,
                         'gpu_idle': gpu_idle,
-                        'gpu_alloc': gpu_alloc
-                    })
+                        'gpu_alloc': gpu_alloc,
+                        'state': current_state or 'UNKNOWN'
+                    }
+
+                    # 根据状态分类
+                    if current_state and 'DRAIN' in current_state.upper():
+                        drain_nodes.append(node_info)
+                    else:
+                        available_nodes.append(node_info)
 
             # 解析新节点的 NodeName
             match = re.search(r'NodeName=(\S+)', line)
@@ -1075,6 +1244,11 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
             current_gres = None
             current_alloc_tres = None
             current_partition = None
+            current_state = None
+
+        # State 行
+        elif line.startswith('State='):
+            current_state = line.split('=', 1)[1]
 
         # Gres 行
         elif line.startswith('Gres='):
@@ -1099,37 +1273,65 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
                     gpu_alloc = int(match.group(1))
 
             gpu_idle = max(0, gpu_total - gpu_alloc)
-            gpu_nodes.append({
+            node_info = {
                 'node': current_node,
                 'partition': current_partition or 'unknown',
                 'gpu_type': gpu_type.upper() if gpu_type else 'GPU',
                 'gpu_total': gpu_total,
                 'gpu_idle': gpu_idle,
-                'gpu_alloc': gpu_alloc
-            })
+                'gpu_alloc': gpu_alloc,
+                'state': current_state or 'UNKNOWN'
+            }
 
-    if not gpu_nodes:
+            if current_state and 'DRAIN' in current_state.upper():
+                drain_nodes.append(node_info)
+            else:
+                available_nodes.append(node_info)
+
+    # 如果指定了分区，过滤
+    if partition:
+        available_nodes = [n for n in available_nodes if partition in n['partition']]
+        drain_nodes = [n for n in drain_nodes if partition in n['partition']]
+
+    if not available_nodes and not drain_nodes:
         print_info("No GPU nodes found")
         return
 
     # 按分区和节点名排序
-    gpu_nodes.sort(key=lambda x: (x['partition'], x['node']))
+    available_nodes.sort(key=lambda x: (x['partition'], x['node']))
+    drain_nodes.sort(key=lambda x: (x['partition'], x['node']))
 
-    # 如果指定了分区，过滤
-    if partition:
-        gpu_nodes = [n for n in gpu_nodes if partition in n['partition']]
+    # 打印可用节点
+    if available_nodes:
+        print(f"[AVAILABLE] 可用节点 ({len(available_nodes)} 个)")
+        print(f"{'Node':<20} {'Partition':<15} {'GPU Idle/Total':<15} {'GPU Type'}")
+        print("-" * 75)
 
-    if not gpu_nodes:
-        print_info(f"No GPU nodes found in partition {partition}")
-        return
+        for node in available_nodes:
+            print(f"{node['node']:<20} {node['partition']:<15} "
+                  f"{node['gpu_idle']}/{node['gpu_total']:<13} "
+                  f"{node['gpu_type']}")
 
-    print(f"{'Node':<20} {'Partition':<15} {'GPU Idle/Total':<15} {'GPU Type'}")
-    print("-" * 75)
+    # 打印排空节点
+    if drain_nodes:
+        print(f"\n[DRAIN] 排空节点（不可用） ({len(drain_nodes)} 个)")
+        print(f"{'Node':<20} {'Partition':<15} {'GPU Idle/Total':<15} {'GPU Type'}")
+        print("-" * 75)
 
-    for node in gpu_nodes:
-        print(f"{node['node']:<20} {node['partition']:<15} "
-              f"{node['gpu_idle']}/{node['gpu_total']:<13} "
-              f"{node['gpu_type']}")
+        for node in drain_nodes:
+            print(f"{node['node']:<20} {node['partition']:<15} "
+                  f"{node['gpu_idle']}/{node['gpu_total']:<13} "
+                  f"{node['gpu_type']}")
+
+    # 汇总统计
+    print("\n" + "=" * 50)
+    print("汇总统计:")
+    total_gpu = sum(n['gpu_total'] for n in available_nodes)
+    total_idle = sum(n['gpu_idle'] for n in available_nodes)
+    print(f"  可用节点: {len(available_nodes)} 个，共 {total_gpu} 张 GPU，{total_idle} 张空闲")
+    if drain_nodes:
+        drain_gpu = sum(n['gpu_total'] for n in drain_nodes)
+        print(f"  排空节点: {len(drain_nodes)} 个，{drain_gpu} 张 GPU（不可用）")
 
 
 # ============================================================================
@@ -2026,6 +2228,188 @@ def cmd_path(args):
 
 
 # ============================================================================
+# 命令: connection (连接管理)
+# ============================================================================
+
+def cmd_connection(args):
+    """连接管理命令"""
+    config = ConfigManager()
+
+    if args.list:
+        _cmd_connection_list(config)
+    elif args.switch:
+        _cmd_connection_switch(config, args.switch)
+    elif args.add:
+        _cmd_connection_add(config, args)
+    elif args.remove:
+        _cmd_connection_remove(config, args.remove)
+    elif args.test:
+        _cmd_connection_test(config, args.test)
+    elif args.info:
+        _cmd_connection_info(config, args.info)
+    else:
+        # 默认显示当前连接信息
+        active = config.get_active_connection()
+        if active:
+            _cmd_connection_info(config, config.get_active_connection_name())
+        else:
+            print_info("No active connection. Use 'connection --add' to add one.")
+
+
+def _cmd_connection_list(config: ConfigManager):
+    """列出所有连接"""
+    connections = config.get_connections()
+    active_name = config.get_active_connection_name()
+
+    if not connections:
+        print_info("No connections configured")
+        return
+
+    print(f"{'Name':<20} {'Type':<10} {'Host':<25} {'Status'}")
+    print("-" * 70)
+
+    for name, conn in sorted(connections.items()):
+        host = conn.get("host", "")
+        port = conn.get("port", 22)
+        conn_type = conn.get("type", "cluster")
+        username = conn.get("username", "")
+
+        status = ""
+        if name == active_name:
+            status = "[ACTIVE]"
+        if conn.get("passwordless"):
+            status += " (passwordless)"
+
+        display = f"{username}@{host}:{port}" if username else f"{host}:{port}"
+        print(f"{name:<20} {conn_type:<10} {display:<25} {status}")
+
+
+def _cmd_connection_switch(config: ConfigManager, name: str):
+    """切换活动连接"""
+    if config.set_active_connection(name):
+        conn = config.get_connection(name)
+        print_success(f"Switched to connection: {name}")
+        print_info(f"  {conn.get('username', '')}@{conn.get('host', '')}:{conn.get('port', 22)}")
+    else:
+        print_error(f"Connection not found: {name}")
+        print_info("Use 'connection --list' to see available connections")
+
+
+def _cmd_connection_add(config: ConfigManager, args):
+    """添加新连接"""
+    name = args.add
+
+    if not args.host or not args.username:
+        print_error("--host and --username are required")
+        return
+
+    conn_info = {
+        "name": args.name or name,
+        "host": args.host,
+        "port": args.port or 22,
+        "username": args.username,
+        "jump_host": args.jump_host or "",
+        "type": args.type or "cluster",
+        "parent": args.parent or None,
+        "passwordless": False
+    }
+
+    # 测试连接
+    print_info(f"Testing connection to {conn_info['username']}@{conn_info['host']}:{conn_info['port']}...")
+    ssh_ok, ssh_error = check_ssh_connection(
+        conn_info["host"],
+        conn_info["port"],
+        conn_info["username"],
+        conn_info["jump_host"]
+    )
+
+    if ssh_ok:
+        conn_info["passwordless"] = True
+        print_success("Connection successful (passwordless configured)")
+    else:
+        print_warning(f"Connection failed: {ssh_error}")
+        print_info("You can add the connection anyway, but passwordless login needs to be configured")
+
+    if config.add_connection(name, conn_info):
+        print_success(f"Connection '{name}' added")
+        # 如果是第一个连接，自动设为活动连接
+        if len(config.get_connections()) == 1:
+            config.set_active_connection(name)
+            print_info("Set as active connection")
+    else:
+        print_error(f"Connection '{name}' already exists. Use --remove to remove it first.")
+
+
+def _cmd_connection_remove(config: ConfigManager, name: str):
+    """删除连接"""
+    if name not in config.get_connections():
+        print_error(f"Connection not found: {name}")
+        return
+
+    # 如果是活动连接，清除活动连接
+    if config.get_active_connection_name() == name:
+        config.config["active_connection"] = None
+        print_info(f"Removed active connection reference")
+
+    del config.config["connections"][name]
+    config.save()
+    print_success(f"Connection '{name}' removed")
+
+
+def _cmd_connection_test(config: ConfigManager, name: str):
+    """测试连接"""
+    conn = config.get_connection(name)
+    if not conn:
+        print_error(f"Connection not found: {name}")
+        return
+
+    print_info(f"Testing connection: {name}")
+    print_info(f"  Host: {conn.get('username')}@{conn.get('host')}:{conn.get('port')}")
+
+    ssh_ok, ssh_error = check_ssh_connection(
+        conn.get("host", ""),
+        conn.get("port", 22),
+        conn.get("username", ""),
+        conn.get("jump_host", "")
+    )
+
+    if ssh_ok:
+        config.update_passwordless_status(name, True)
+        print_success("Connection successful (passwordless configured)")
+    else:
+        config.update_passwordless_status(name, False)
+        print_error(f"Connection failed: {ssh_error}")
+        print_info("To configure passwordless login:")
+        print(f"  ssh-copy-id -p {conn.get('port', 22)} {conn.get('username')}@{conn.get('host')}")
+
+
+def _cmd_connection_info(config: ConfigManager, name: str):
+    """显示连接详情"""
+    conn = config.get_connection(name)
+    if not conn:
+        print_error(f"Connection not found: {name}")
+        return
+
+    active_name = config.get_active_connection_name()
+    is_active = name == active_name
+
+    print(f"Connection: {name}")
+    if is_active:
+        print("  [ACTIVE]")
+    print("-" * 50)
+    print(f"  Name:          {conn.get('name', 'N/A')}")
+    print(f"  Type:          {conn.get('type', 'cluster')}")
+    print(f"  Host:          {conn.get('host', 'N/A')}")
+    print(f"  Port:          {conn.get('port', 22)}")
+    print(f"  Username:      {conn.get('username', 'N/A')}")
+    print(f"  Jump Host:     {conn.get('jump_host') or '(none)'}")
+    print(f"  Parent:        {conn.get('parent') or '(none)'}")
+    print(f"  Passwordless:  {'Yes' if conn.get('passwordless') else 'No'}")
+    print(f"  Created:       {conn.get('created_at', 'N/A')}")
+    print(f"  Last Used:     {conn.get('last_used', 'N/A')}")
+
+
+# ============================================================================
 # 主函数
 # ============================================================================
 
@@ -2136,6 +2520,22 @@ def main():
     path_parser = subparsers.add_parser("path", help="打印脚本和配置路径信息")
     path_parser.add_argument("--json", action="store_true", help="JSON 格式输出")
 
+    # connection - 连接管理
+    conn_parser = subparsers.add_parser("connection", help="连接管理（多连接支持）")
+    conn_parser.add_argument("-l", "--list", action="store_true", help="列出所有连接")
+    conn_parser.add_argument("-s", "--switch", metavar="NAME", help="切换活动连接")
+    conn_parser.add_argument("-a", "--add", metavar="NAME", help="添加新连接")
+    conn_parser.add_argument("-r", "--remove", metavar="NAME", help="删除连接")
+    conn_parser.add_argument("-t", "--test", metavar="NAME", help="测试连接")
+    conn_parser.add_argument("-i", "--info", metavar="NAME", help="显示连接详情")
+    conn_parser.add_argument("--name", metavar="NAME", help="连接显示名称")
+    conn_parser.add_argument("--host", help="主机地址")
+    conn_parser.add_argument("--port", type=int, default=22, help="SSH 端口")
+    conn_parser.add_argument("--username", help="用户名")
+    conn_parser.add_argument("--jump-host", help="跳板机")
+    conn_parser.add_argument("--type", choices=["cluster", "instance"], default="cluster", help="连接类型")
+    conn_parser.add_argument("--parent", help="父连接（用于实例）")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2162,6 +2562,7 @@ def main():
         "ssh-test": cmd_ssh_test,
         "exec": cmd_exec,
         "path": cmd_path,
+        "connection": cmd_connection,
     }
 
     if args.command in cmd_map:
