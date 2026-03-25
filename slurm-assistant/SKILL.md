@@ -195,6 +195,39 @@ uv run python "$SCRIPT" connection --info <别名>
 
 **背景**：部分集群提供"实例"功能，IP 与集群一致，端口不同。
 
+### 0. 检查已有连接
+
+首先列出所有连接：
+
+```bash
+uv run python "$SCRIPT" connection --list
+```
+
+**根据结果分支处理：**
+
+#### 0a. 已有实例连接
+
+如果存在 `type=instance` 的连接：
+- **只有一个实例** → 直接切换：
+  ```bash
+  uv run python "$SCRIPT" connection --switch <实例别名>
+  ```
+- **多个实例** → 询问用户要连接哪个：
+  ```json
+  {
+    "questions": [
+      {
+        "question": "检测到多个实例连接，请选择要连接的实例：",
+        "options": ["<实例1别名>", "<实例2别名>", "添加新实例"]
+      }
+    ]
+  }
+  ```
+
+#### 0b. 没有实例连接
+
+进入"添加实例连接"流程（以下步骤 1-5）。
+
 ### 1. 询问端口和用户名
 
 使用 AskUserQuestion 收集实例端口和用户名：
