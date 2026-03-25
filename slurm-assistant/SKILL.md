@@ -392,6 +392,20 @@ uv run python "$SCRIPT" exec -c <命令>
 
 **LaTeX 安装：**
 - 用户需要 LaTeX 但未安装时，引导执行：`sh /home/share/Official/tools/texlive/install.sh`
+
+**A10 分区使用提示：**
+- A10 分区有严格的空闲自动释放机制
+- 申请资源后如果没有立即运行命令，资源会被自动释放
+- **建议**：申请时直接指定要运行的命令，或使用 `salloc` 后立即 `srun`
+
+```bash
+# 推荐：申请时直接运行命令
+salloc -p gpu-a10 --gres=gpu:1 srun python train.py
+
+# 不推荐：单独申请后可能被释放
+salloc -p gpu-a10 --gres=gpu:1
+# 等待... 资源可能已被自动释放
+```
 - 避免用户手动下载安装 TexLive（非常耗时）
 
 **路径映射（重要）：**
