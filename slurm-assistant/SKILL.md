@@ -94,20 +94,98 @@ uv run python "$SCRIPT" init --check --output-json [--fast]
 - 远程模式 → `workflow_init.md`
 - 本地模式 → `workflow_local_execution.md`
 
-#### 场景 B：已配置但无效 (`configured: true, config_valid: false`)
+#### 场景 B：已配置（单个连接）
 
-向用户说明问题并询问是否重新配置：
+直接使用该连接执行后续命令。
 
-```json
-{
-  "questions": [
-    {
-      "question": "配置存在问题：{config_error}。是否重新配置？",
-      "options": ["重新配置", "稍后处理"]
-    }
-  ]
-}
+#### 场景 C：已配置（多个连接）
+
+当存在多个连接时，执行：
+
+```bash
+uv run python "$SCRIPT" connection --list
 ```
+
+根据输出结果，AI 应该：
+1. 列出所有连接及其状态
+2. 标记当前活动连接（[ACTIVE]）
+3. 在后续命令中使用 `-C` 参数指定连接
+
+**示例：**
+```
+连接列表：
+  别名                  类型        地址                    状态
+  gzu-cluster          cluster    qiandingh@210.40.56.85:21563  [ACTIVE]
+  gzu-instance-21810   instance   hqd@210.40.56.85:21810
+
+当用户说"集群"时使用 `gzu-cluster`，说"实例"时使用 `gzu-instance-21810`。
+```
+
+---
+
+## 多连接管理
+
+Slurm Assistant 支持多个"连接"（集群和实例），每个连接包含独立的配置信息。
+
+### 连接结构
+
+每个连接包含以下信息：
+- `name`: 显示名称
+- `host`: IP 地址
+- `port`: SSH 端口
+- `username`: 用户名
+- `jump_host`: 跳板机（可选）
+- `type`: 类型（cluster 或 instance）
+- `parent`: 父连接名（仅实例需要）
+- `passwordless`: 是否已配置免密登录
+
+### 连接别名
+
+系统自动为连接生成简短的别名，格式：
+- 集群：`{关键词}-cluster`（如 `gzu-cluster`）
+- 实例：`{关键词}-instance-{端口}`（如 `gzu-instance-21810`）
+
+### 连接管理命令
+
+```bash
+# 列出所有连接
+uv run python "$SCRIPT" connection --list
+
+# 切换活动连接（永久保存）
+uv run python "$SCRIPT" connection --switch <别名>
+
+# 临时切换连接（单次命令有效，不修改配置）
+uv run python "$SCRIPT" -C <别名> <其他命令>
+
+# 添加新连接
+uv run python "$SCRIPT" connection --add <别名> --host <IP> --port <端口> --username <用户名> --type <cluster|instance>
+
+# 删除连接
+uv run python "$SCRIPT" connection --remove <别名>
+
+# 查看连接详情
+uv run python "$SCRIPT" connection --info <别名>
+```
+
+### 多连接场景处理
+
+**当存在多个连接时，AI 应该：**
+
+1. 在配置检查后，列出所有可用连接：
+   ```bash
+   uv run python "$SCRIPT" connection --list
+   ```
+
+2. 根据用户意图判断目标连接：
+   - 用户说"集群" → 查找 type=cluster 的连接
+   - 用户说"实例" → 查找 type=instance 的连接
+   - 用户提到端口号（如"21810"）→ 查找对应端口的连接
+
+3. 使用 `-C` 参数临时切换：
+   ```bash
+   uv run python "$SCRIPT" -C gzu-cluster find-gpu
+   uv run python "$SCRIPT" -C gzu-instance-21810 exec -c "hostname"
+   ```
 
 ---
 
@@ -282,6 +360,21 @@ uv run python "$SCRIPT" exec -c <命令>
 **LaTeX 安装：**
 - 用户需要 LaTeX 但未安装时，引导执行：`sh /home/share/Official/tools/texlive/install.sh`
 - 避免用户手动下载安装 TexLive（非常耗时）
+
+**路径映射（重要）：**
+
+贵州大学 HPC 提供三种访问方式，路径映射不同：
+
+| 环境 | 个人目录 | 项目目录 |
+|------|----------|----------|
+| 容器实例 | `/home/<username>` | `/groups/<project>/home/<username>` |
+| 虚拟机实例 | `/webdav/MyData` | `/webdav/ProjectGroup(<project>)` |
+| 公共集群 | `/users/<username>` | `/groups/<project>/home/<username>` |
+
+**AI 注意事项：**
+- 当用户提到"实例"时，需确认是容器实例（SSH）还是虚拟机实例（WebDAV）
+- 容器实例路径以 `/home/` 开头，虚拟机实例路径以 `/webdav/` 开头
+- 详细映射见 `references/use_gzu.md`
 
 ---
 

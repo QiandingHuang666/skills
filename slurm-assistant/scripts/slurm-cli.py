@@ -82,6 +82,52 @@ def detect_current_agent_name() -> str:
     return "unknown"
 
 
+def _generate_connection_alias(name: str, host: str, port: int) -> str:
+    """
+    生成连接别名
+
+    规则：
+    1. 从名称提取关键词（如 "贵州大学 HPC" -> "gzu"）
+    2. 非标准端口添加端口后缀
+    3. 生成格式: {关键词}-{端口后缀}
+
+    示例：
+    - "贵州大学 HPC", 21563 -> "gzu-cluster"
+    - "贵州大学 HPC 实例", 21810 -> "gzu-instance-21810"
+    - "remote", 22 -> "remote"
+    """
+    # 预定义的名称映射
+    name_keywords = {
+        "贵州大学": "gzu",
+        "贵州": "gzu",
+        "gzu": "gzu",
+        "清华大学": "thu",
+        "北大": "pku",
+        "中科院": "cas",
+    }
+
+    # 提取关键词
+    keyword = "conn"
+    for key, val in name_keywords.items():
+        if key in name.lower():
+            keyword = val
+            break
+
+    # 判断类型
+    if "实例" in name or "instance" in name.lower():
+        conn_type = "instance"
+    else:
+        conn_type = "cluster"
+
+    # 生成别名
+    if port == 22:
+        # 标准端口不添加后缀
+        return f"{keyword}-{conn_type}"
+    else:
+        # 非标准端口添加端口号
+        return f"{keyword}-{conn_type}-{port}"
+
+
 class Colors:
     """终端颜色"""
     RED = '\033[91m'
@@ -149,6 +195,7 @@ class ConfigManager:
 
     def __init__(self):
         self.config: Dict[str, Any] = {}
+        self._override_connection: Optional[str] = None  # 临时覆盖的连接名
         self._load()
         self._migrate_old_config()
 
@@ -205,6 +252,9 @@ class ConfigManager:
 
     def get_active_connection(self) -> Optional[Dict[str, Any]]:
         """获取当前活动连接"""
+        # 优先使用临时覆盖的连接
+        if self._override_connection:
+            return self.get_connection(self._override_connection)
         active_name = self.config.get("active_connection")
         if active_name:
             return self.get_connection(active_name)
@@ -212,7 +262,20 @@ class ConfigManager:
 
     def get_active_connection_name(self) -> Optional[str]:
         """获取当前活动连接名称"""
+        if self._override_connection:
+            return self._override_connection
         return self.config.get("active_connection")
+
+    def set_temp_connection(self, name: str) -> bool:
+        """临时切换连接（不修改配置文件）"""
+        if name in self.get_connections():
+            self._override_connection = name
+            return True
+        return False
+
+    def clear_temp_connection(self):
+        """清除临时连接覆盖"""
+        self._override_connection = None
 
     def set_active_connection(self, name: str) -> bool:
         """设置活动连接"""
@@ -1053,12 +1116,24 @@ def cmd_init(args):
             result["config_valid"] = False
             result["config_error"] = "未配置"
 
+        # 添加连接数量信息
+        connections = config.get_connections()
+        result["connection_count"] = len(connections)
+        result["connections"] = list(connections.keys())
+
         if args.output_json:
             print(json.dumps(result, ensure_ascii=False))
         else:
             # 人性化输出
             if config.is_configured():
                 print_success("Config: loaded")
+
+                # 显示连接数量
+                if len(connections) > 1:
+                    print_info(f"Connections: {len(connections)} ({', '.join(connections.keys())})")
+                    active = config.get_active_connection_name()
+                    if active:
+                        print_info(f"Active: {active}")
 
                 mode = config.get_mode()
                 cluster = config.get_cluster_info()
@@ -1094,33 +1169,54 @@ def cmd_init(args):
         die("Must specify --mode (local or remote)")
 
     if args.mode == "local":
+        # 本地模式：保持旧格式兼容
         config.config = {
             "mode": "local",
             "cluster": {"name": args.cluster_name or "local"}
         }
+        config.save()
         print_info("Mode: local")
+        print_success(f"Configuration saved to {CONFIG_FILE}")
     else:
         if not args.host or not args.username:
             die("Remote mode requires --host and --username")
 
-        config.config = {
-            "mode": "remote",
-            "cluster": {
-                "name": args.cluster_name or "remote",
-                "host": args.host,
-                "port": args.port or 22,
-                "username": args.username,
-                "jump_host": args.jump_host or ""
-            }
+        # 生成连接别名
+        conn_alias = _generate_connection_alias(
+            args.cluster_name or "remote",
+            args.host,
+            args.port or 22
+        )
+
+        # 使用 add_connection 方法（不覆盖已有连接）
+        conn_info = {
+            "name": args.cluster_name or "remote",
+            "host": args.host,
+            "port": args.port or 22,
+            "username": args.username,
+            "jump_host": args.jump_host or "",
+            "type": "cluster",
+            "parent": None,
+            "passwordless": None
         }
-        print_info("Mode: remote")
+
+        # 如果连接已存在，更新它
+        if config.get_connection(conn_alias):
+            config.update_connection(conn_alias, conn_info)
+            print_info(f"Updated existing connection: {conn_alias}")
+        else:
+            config.add_connection(conn_alias, conn_info)
+            print_info(f"Added new connection: {conn_alias}")
+
+        # 设置为活动连接
+        config.set_active_connection(conn_alias)
+
+        print_info(f"Mode: remote")
         print_info(f"Cluster: {args.cluster_name or 'remote'}")
         print_info(f"Address: {args.username}@{args.host}:{args.port or 22}")
         if args.jump_host:
             print_info(f"Jump host: {args.jump_host}")
-
-    config.save()
-    print_success(f"Configuration saved to {CONFIG_FILE}")
+        print_success(f"Configuration saved to {CONFIG_FILE}")
 
     if args.mode == "remote":
         print_info("Checking SSH connection...")
@@ -2418,6 +2514,9 @@ def main():
         description="Slurm Cluster Assistant CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    # 全局参数
+    parser.add_argument("-C", "--connection", metavar="NAME", help="指定使用的连接（临时切换，不修改配置）")
+
     subparsers = parser.add_subparsers(dest="command", help="命令")
 
     # init
@@ -2537,6 +2636,14 @@ def main():
     conn_parser.add_argument("--parent", help="父连接（用于实例）")
 
     args = parser.parse_args()
+
+    # 处理临时连接切换
+    if args.connection:
+        config = ConfigManager()
+        if not config.set_temp_connection(args.connection):
+            print_error(f"Connection not found: {args.connection}")
+            print_info("Use 'connection --list' to see available connections")
+            sys.exit(1)
 
     if not args.command:
         parser.print_help()
