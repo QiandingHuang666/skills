@@ -225,6 +225,29 @@ pub struct SlurmSubmitData {
     pub raw_output: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileUploadRequest {
+    pub connection_id: String,
+    pub local_path: String,
+    pub remote_path: String,
+    pub recursive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileDownloadRequest {
+    pub connection_id: String,
+    pub remote_path: String,
+    pub local_path: String,
+    pub recursive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileTransferData {
+    pub source_path: String,
+    pub destination_path: String,
+    pub recursive: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,6 +385,19 @@ mod tests {
         });
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SuccessResponse<SlurmSubmitData> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn file_upload_request_roundtrip() {
+        let value = FileUploadRequest {
+            connection_id: "conn_gzu_cluster".to_string(),
+            local_path: "/tmp/train.py".to_string(),
+            remote_path: "~/train.py".to_string(),
+            recursive: false,
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: FileUploadRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 

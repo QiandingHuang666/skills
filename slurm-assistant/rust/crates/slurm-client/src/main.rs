@@ -9,10 +9,10 @@ use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use slurm_proto::{
     ConnectionAddRequest, ConnectionKind, ConnectionListData, ExecRunData, ExecRunRequest,
-    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
-    SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
-    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
-    SlurmSubmitRequest, SuccessResponse,
+    FileDownloadRequest, FileTransferData, FileUploadRequest, RuntimeFile, ServerStatusData,
+    SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode,
+    SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
+    SlurmStatusGpuRequest, SlurmSubmitData, SlurmSubmitRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -26,12 +26,14 @@ struct Cli {
 enum Command {
     Cancel(CancelCommand),
     Connection(ConnectionCommand),
+    Download(DownloadCommand),
     Exec(ExecCommand),
     FindGpu(FindGpuCommand),
     Jobs(JobsCommand),
     Log(LogCommand),
     Status(StatusCommand),
     Submit(SubmitCommand),
+    Upload(UploadCommand),
     Server(ServerCommand),
 }
 
@@ -149,6 +151,30 @@ struct SubmitCommand {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct UploadCommand {
+    local_path: String,
+    remote_path: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(short = 'r', long)]
+    recursive: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct DownloadCommand {
+    remote_path: String,
+    local_path: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(short = 'r', long)]
+    recursive: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum ConnectionKindArg {
     Local,
@@ -237,6 +263,23 @@ fn main() -> Result<()> {
                         }
                     }
                 }
+            }
+        }
+        Command::Download(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = download_query(
+                &runtime,
+                &FileDownloadRequest {
+                    connection_id: cmd.connection_id,
+                    remote_path: cmd.remote_path,
+                    local_path: cmd.local_path,
+                    recursive: cmd.recursive,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                print_transfer_text("Downloaded", &payload.data);
             }
         }
         Command::Exec(cmd) => {
@@ -361,6 +404,23 @@ fn main() -> Result<()> {
             } else {
                 println!("{}", payload.data.raw_output);
                 println!("job_id: {}", payload.data.job_id);
+            }
+        }
+        Command::Upload(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = upload_query(
+                &runtime,
+                &FileUploadRequest {
+                    connection_id: cmd.connection_id,
+                    local_path: cmd.local_path,
+                    remote_path: cmd.remote_path,
+                    recursive: cmd.recursive,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                print_transfer_text("Uploaded", &payload.data);
             }
         }
         Command::Server(cmd) => match cmd.command {
@@ -501,6 +561,32 @@ fn submit_query(
     )
 }
 
+fn upload_query(
+    runtime: &RuntimeFile,
+    request: &FileUploadRequest,
+) -> Result<SuccessResponse<FileTransferData>> {
+    send_request_json(
+        http_client()
+            .post(format!("http://{}:{}/v1/files/upload", runtime.host, runtime.port))
+            .json(request),
+        runtime,
+        "failed to decode upload response",
+    )
+}
+
+fn download_query(
+    runtime: &RuntimeFile,
+    request: &FileDownloadRequest,
+) -> Result<SuccessResponse<FileTransferData>> {
+    send_request_json(
+        http_client()
+            .post(format!("http://{}:{}/v1/files/download", runtime.host, runtime.port))
+            .json(request),
+        runtime,
+        "failed to decode download response",
+    )
+}
+
 fn status_gpu_query(
     runtime: &RuntimeFile,
     request: &SlurmStatusGpuRequest,
@@ -631,6 +717,12 @@ fn print_gpu_summary(available_nodes: u32, total_gpu: u32, idle_gpu: u32) {
     println!("  available_nodes: {}", available_nodes);
     println!("  total_gpu: {}", total_gpu);
     println!("  idle_gpu: {}", idle_gpu);
+}
+
+fn print_transfer_text(action: &str, data: &FileTransferData) {
+    println!("{} {}", action, data.source_path);
+    println!("  to: {}", data.destination_path);
+    println!("  recursive: {}", data.recursive);
 }
 
 fn send_request_json<T>(

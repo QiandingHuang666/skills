@@ -20,11 +20,11 @@ use clap::{Parser, Subcommand};
 use rusqlite::{params, Connection};
 use slurm_proto::{
     ConnectionAddData, ConnectionAddRequest, ConnectionKind, ConnectionListData, ConnectionRecord,
-    ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, PingData, RuntimeFile,
-    ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest,
-    SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
-    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
-    SlurmSubmitRequest, SuccessResponse,
+    ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, FileDownloadRequest,
+    FileTransferData, FileUploadRequest, PingData, RuntimeFile, ServerStatusData, SlurmCancelData,
+    SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary,
+    SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
+    SlurmStatusGpuRequest, SlurmSubmitData, SlurmSubmitRequest, SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -146,6 +146,8 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/slurm/cancel", post(handle_slurm_cancel))
         .route("/v1/slurm/log", post(handle_slurm_log))
         .route("/v1/slurm/submit", post(handle_slurm_submit))
+        .route("/v1/files/upload", post(handle_files_upload))
+        .route("/v1/files/download", post(handle_files_download))
         .with_state(state)
 }
 
@@ -293,6 +295,34 @@ async fn handle_slurm_submit(
         return unauthorized_response();
     }
     match query_slurm_submit(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_files_upload(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<FileUploadRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match handle_upload(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_files_download(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<FileDownloadRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match handle_download(&state.db_path, &request) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -661,6 +691,38 @@ fn query_slurm_submit(path: &Path, request: &SlurmSubmitRequest) -> Result<Slurm
     Ok(SlurmSubmitData { job_id, raw_output })
 }
 
+fn handle_upload(path: &Path, request: &FileUploadRequest) -> Result<FileTransferData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    transfer_path(
+        &connection,
+        &request.local_path,
+        &request.remote_path,
+        request.recursive,
+        false,
+    )?;
+    Ok(FileTransferData {
+        source_path: request.local_path.clone(),
+        destination_path: request.remote_path.clone(),
+        recursive: request.recursive,
+    })
+}
+
+fn handle_download(path: &Path, request: &FileDownloadRequest) -> Result<FileTransferData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    transfer_path(
+        &connection,
+        &request.remote_path,
+        &request.local_path,
+        request.recursive,
+        true,
+    )?;
+    Ok(FileTransferData {
+        source_path: request.remote_path.clone(),
+        destination_path: request.local_path.clone(),
+        recursive: request.recursive,
+    })
+}
+
 fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(String, Vec<String>)> {
     match connection.kind {
         ConnectionKind::Local => {
@@ -758,6 +820,130 @@ fn parse_submitted_job_id(raw_output: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("submit output missing job id capture"))?
         .as_str()
         .to_string())
+}
+
+fn transfer_path(
+    connection: &ConnectionRecord,
+    src: &str,
+    dst: &str,
+    recursive: bool,
+    download: bool,
+) -> Result<()> {
+    match connection.kind {
+        ConnectionKind::Local => local_transfer(src, dst, recursive),
+        ConnectionKind::Cluster | ConnectionKind::Instance | ConnectionKind::Server => {
+            let (program, args) = build_scp_program(connection, src, dst, recursive, download)?;
+            let output = run_process(program, &args, 300)?;
+            if output.exit_code != 0 {
+                return Err(anyhow::anyhow!(
+                    "scp failed with exit code {}: {}",
+                    output.exit_code,
+                    output.stderr.trim()
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn build_scp_program(
+    connection: &ConnectionRecord,
+    src: &str,
+    dst: &str,
+    recursive: bool,
+    download: bool,
+) -> Result<(String, Vec<String>)> {
+    let host = connection
+        .host
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("remote connection missing host"))?;
+    let username = connection
+        .username
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("remote connection missing username"))?;
+
+    let mut args = vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+    ];
+    if let Some(port) = connection.port {
+        args.push("-P".to_string());
+        args.push(port.to_string());
+    }
+    if let Some(jump_host) = &connection.jump_host {
+        args.push("-J".to_string());
+        args.push(jump_host.clone());
+    }
+    if recursive {
+        args.push("-r".to_string());
+    }
+
+    let remote_prefix = format!("{username}@{host}:");
+    let source = if download {
+        format!("{remote_prefix}{src}")
+    } else {
+        src.to_string()
+    };
+    let destination = if download {
+        dst.to_string()
+    } else {
+        format!("{remote_prefix}{dst}")
+    };
+    args.push(source);
+    args.push(destination);
+    Ok(("scp".to_string(), args))
+}
+
+fn local_transfer(src: &str, dst: &str, recursive: bool) -> Result<()> {
+    let src_path = PathBuf::from(src);
+    let dst_path = PathBuf::from(dst);
+    if src_path.is_dir() {
+        if !recursive {
+            return Err(anyhow::anyhow!(
+                "source is a directory; use recursive transfer for {}",
+                src_path.display()
+            ));
+        }
+        copy_dir_recursive(&src_path, &dst_path)
+    } else {
+        copy_file_like_cp(&src_path, &dst_path)
+    }
+}
+
+fn copy_file_like_cp(src: &Path, dst: &Path) -> Result<()> {
+    let target = if dst.exists() && dst.is_dir() {
+        dst.join(
+            src.file_name()
+                .ok_or_else(|| anyhow::anyhow!("source missing file name: {}", src.display()))?,
+        )
+    } else {
+        dst.to_path_buf()
+    };
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create parent dir {}", parent.display()))?;
+    }
+    fs::copy(src, &target)
+        .with_context(|| format!("failed to copy {} -> {}", src.display(), target.display()))?;
+    Ok(())
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst)
+        .with_context(|| format!("failed to create destination dir {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("failed to read dir {}", src.display()))? {
+        let entry = entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to inspect {}", entry.path().display()))?;
+        let target = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &target)?;
+        } else {
+            copy_file_like_cp(&entry.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 fn local_username() -> Option<String> {
@@ -1430,5 +1616,47 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         );
         let err = parse_submitted_job_id("submission failed").unwrap_err();
         assert!(err.to_string().contains("failed to parse submitted job id"));
+    }
+
+    #[test]
+    fn build_scp_program_uses_remote_prefixes() {
+        let connection = ConnectionRecord {
+            id: "conn_gzu_cluster".to_string(),
+            label: "gzu-cluster".to_string(),
+            host: Some("210.40.56.85".to_string()),
+            port: Some(21563),
+            username: Some("qiandingh".to_string()),
+            kind: ConnectionKind::Cluster,
+            jump_host: None,
+        };
+        let (program, args) =
+            build_scp_program(&connection, "/tmp/train.py", "~/train.py", false, false).unwrap();
+        assert_eq!(program, "scp");
+        assert_eq!(args.last().map(String::as_str), Some("qiandingh@210.40.56.85:~/train.py"));
+
+        let (_, download_args) =
+            build_scp_program(&connection, "~/slurm.out", "/tmp/slurm.out", false, true).unwrap();
+        assert!(download_args
+            .iter()
+            .any(|value| value == "qiandingh@210.40.56.85:~/slurm.out"));
+    }
+
+    #[test]
+    fn local_transfer_roundtrip_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let src = temp.path().join("src.txt");
+        let dst_dir = temp.path().join("dst");
+        fs::create_dir_all(&dst_dir).unwrap();
+        fs::write(&src, "hello").unwrap();
+
+        local_transfer(
+            src.to_str().unwrap(),
+            dst_dir.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+
+        let copied = dst_dir.join("src.txt");
+        assert_eq!(fs::read_to_string(copied).unwrap(), "hello");
     }
 }
