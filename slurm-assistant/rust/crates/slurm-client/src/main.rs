@@ -23,8 +23,15 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Debug, serde::Serialize)]
+struct AllocPlanOutput {
+    command: String,
+    execute: bool,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
+    Alloc(AllocCommand),
     Cancel(CancelCommand),
     Connection(ConnectionCommand),
     Download(DownloadCommand),
@@ -32,6 +39,8 @@ enum Command {
     FindGpu(FindGpuCommand),
     Jobs(JobsCommand),
     Log(LogCommand),
+    Release(ReleaseCommand),
+    Run(RunCommand),
     Status(StatusCommand),
     Submit(SubmitCommand),
     Upload(UploadCommand),
@@ -43,6 +52,30 @@ struct CancelCommand {
     job_ids: Vec<String>,
     #[arg(long = "connection")]
     connection_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct AllocCommand {
+    #[arg(short = 'p', long)]
+    partition: String,
+    #[arg(short = 'g', long = "gres")]
+    gres: Option<String>,
+    #[arg(short = 'c', long = "cpus")]
+    cpus: Option<u32>,
+    #[arg(long)]
+    time: Option<String>,
+    #[arg(long)]
+    mem: Option<String>,
+    #[arg(long)]
+    nodelist: Option<String>,
+    #[arg(long = "max-wait")]
+    max_wait: Option<u32>,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    execute: bool,
     #[arg(long)]
     json: bool,
 }
@@ -135,6 +168,37 @@ struct LogCommand {
 }
 
 #[derive(Debug, Args)]
+struct ReleaseCommand {
+    job_id: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct RunCommand {
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(short = 'p', long)]
+    partition: Option<String>,
+    #[arg(short = 'g', long = "gres")]
+    gres: Option<String>,
+    #[arg(short = 'c', long = "cpus")]
+    cpus: Option<u32>,
+    #[arg(long)]
+    time: Option<String>,
+    #[arg(long)]
+    mem: Option<String>,
+    #[arg(long)]
+    nodelist: Option<String>,
+    #[arg(required = true, trailing_var_arg = true)]
+    command: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct StatusCommand {
     #[arg(long = "connection")]
     connection_id: String,
@@ -210,6 +274,50 @@ impl From<ConnectionKindArg> for ConnectionKind {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Alloc(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let alloc_command = build_salloc_command(
+                &cmd.partition,
+                cmd.gres.as_deref(),
+                cmd.cpus,
+                cmd.time.as_deref(),
+                cmd.mem.as_deref(),
+                cmd.nodelist.as_deref(),
+                cmd.max_wait,
+            );
+            if cmd.execute {
+                let payload = exec_run(
+                    &runtime,
+                    &ExecRunRequest {
+                        connection_id: cmd.connection_id,
+                        command: alloc_command,
+                        timeout_secs: 30,
+                    },
+                )?;
+                if cmd.json {
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    if !payload.data.stdout.is_empty() {
+                        print!("{}", payload.data.stdout);
+                    }
+                    if !payload.data.stderr.is_empty() {
+                        eprint!("{}", payload.data.stderr);
+                    }
+                    eprintln!("exit_code: {}", payload.data.exit_code);
+                }
+            } else if cmd.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&AllocPlanOutput {
+                        command: alloc_command,
+                        execute: false,
+                    })?
+                );
+            } else {
+                println!("Interactive allocation command");
+                println!("  {}", alloc_command);
+            }
+        }
         Command::Cancel(cmd) => {
             let runtime = read_runtime_file(&runtime_file_path()?)?;
             let payload = cancel_query(
@@ -386,6 +494,55 @@ fn main() -> Result<()> {
                 if !payload.data.content.ends_with('\n') {
                     println!();
                 }
+            }
+        }
+        Command::Release(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = cancel_query(
+                &runtime,
+                &SlurmCancelRequest {
+                    connection_id: cmd.connection_id,
+                    job_ids: vec![cmd.job_id],
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!("Resources released");
+                for job_id in payload.data.cancelled {
+                    println!("  {}", job_id);
+                }
+            }
+        }
+        Command::Run(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let srun_command = build_srun_command(
+                &cmd.command,
+                cmd.partition.as_deref(),
+                cmd.gres.as_deref(),
+                cmd.cpus,
+                cmd.time.as_deref(),
+                cmd.mem.as_deref(),
+                cmd.nodelist.as_deref(),
+            )?;
+            let payload = exec_run(
+                &runtime,
+                &ExecRunRequest {
+                    connection_id: cmd.connection_id,
+                    command: srun_command,
+                    timeout_secs: 30,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                if !payload.data.stdout.is_empty() {
+                    print!("{}", payload.data.stdout);
+                }
+                if !payload.data.stderr.is_empty() {
+                    eprint!("{}", payload.data.stderr);
+                }
+                eprintln!("exit_code: {}", payload.data.exit_code);
             }
         }
         Command::Status(cmd) => {
@@ -801,6 +958,75 @@ fn print_connection_detail(connection: &ConnectionRecord) {
     );
 }
 
+fn build_salloc_command(
+    partition: &str,
+    gres: Option<&str>,
+    cpus: Option<u32>,
+    time: Option<&str>,
+    mem: Option<&str>,
+    nodelist: Option<&str>,
+    max_wait: Option<u32>,
+) -> String {
+    let mut parts = vec!["salloc".to_string(), "-p".to_string(), partition.to_string()];
+    if let Some(cpus) = cpus {
+        parts.push(format!("--cpus-per-task={cpus}"));
+    }
+    if let Some(gres) = gres {
+        parts.push(format!("--gres={gres}"));
+    }
+    if let Some(time) = time {
+        parts.push(format!("--time={time}"));
+    }
+    if let Some(mem) = mem {
+        parts.push(format!("--mem={mem}"));
+    }
+    if let Some(nodelist) = nodelist {
+        parts.push("-w".to_string());
+        parts.push(nodelist.to_string());
+    }
+    if let Some(max_wait) = max_wait {
+        parts.push(format!("--wait={max_wait}"));
+    }
+    parts.join(" ")
+}
+
+fn build_srun_command(
+    command: &[String],
+    partition: Option<&str>,
+    gres: Option<&str>,
+    cpus: Option<u32>,
+    time: Option<&str>,
+    mem: Option<&str>,
+    nodelist: Option<&str>,
+) -> Result<String> {
+    if command.is_empty() {
+        bail!("must provide command for srun");
+    }
+    let mut parts = vec!["srun".to_string()];
+    if let Some(partition) = partition {
+        parts.push("-p".to_string());
+        parts.push(partition.to_string());
+    }
+    if let Some(gres) = gres {
+        parts.push(format!("--gres={gres}"));
+    }
+    if let Some(cpus) = cpus {
+        parts.push(format!("--cpus-per-task={cpus}"));
+    }
+    if let Some(time) = time {
+        parts.push(format!("--time={time}"));
+    }
+    if let Some(mem) = mem {
+        parts.push(format!("--mem={mem}"));
+    }
+    if let Some(nodelist) = nodelist {
+        parts.push("-w".to_string());
+        parts.push(nodelist.to_string());
+    }
+    parts.extend(command.iter().cloned());
+    Ok(parts.join(" "))
+}
+
 fn send_request_json<T>(
     builder: reqwest::blocking::RequestBuilder,
     runtime: &RuntimeFile,
@@ -890,5 +1116,46 @@ mod tests {
         };
         assert_eq!(data.summary.available_nodes, 1);
         assert_eq!(data.available_nodes[0].gpu_type, "A10");
+    }
+
+    #[test]
+    fn build_salloc_command_renders_optional_flags() {
+        let command = build_salloc_command(
+            "gpu-a10",
+            Some("gpu:1"),
+            Some(8),
+            Some("00:30:00"),
+            Some("16G"),
+            Some("gpu-a10-3"),
+            Some(5),
+        );
+        assert_eq!(
+            command,
+            "salloc -p gpu-a10 --cpus-per-task=8 --gres=gpu:1 --time=00:30:00 --mem=16G -w gpu-a10-3 --wait=5"
+        );
+    }
+
+    #[test]
+    fn build_srun_command_requires_payload() {
+        let err = build_srun_command(&[], None, None, None, None, None, None).unwrap_err();
+        assert!(err.to_string().contains("must provide command"));
+    }
+
+    #[test]
+    fn build_srun_command_renders_flags() {
+        let command = build_srun_command(
+            &["python".to_string(), "train.py".to_string()],
+            Some("gpu-a10"),
+            Some("gpu:1"),
+            Some(8),
+            Some("01:00:00"),
+            Some("32G"),
+            Some("gpu-a10-7"),
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            "srun -p gpu-a10 --gres=gpu:1 --cpus-per-task=8 --time=01:00:00 --mem=32G -w gpu-a10-7 python train.py"
+        );
     }
 }
