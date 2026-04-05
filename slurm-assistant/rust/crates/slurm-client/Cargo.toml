@@ -1,0 +1,16 @@
+[package]
+name = "slurm-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"] }
+serde.workspace = true
+serde_json.workspace = true
+slurm-proto = { path = "../slurm-proto" }
+
+[dev-dependencies]
+tempfile = "3"
