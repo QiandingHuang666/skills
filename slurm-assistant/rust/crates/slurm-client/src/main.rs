@@ -8,11 +8,12 @@ use clap::{Args, Parser, Subcommand};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use slurm_proto::{
-    ConnectionAddRequest, ConnectionKind, ConnectionListData, ExecRunData, ExecRunRequest,
-    FileDownloadRequest, FileTransferData, FileUploadRequest, RuntimeFile, ServerStatusData,
-    SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode,
-    SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
-    SlurmStatusGpuRequest, SlurmSubmitData, SlurmSubmitRequest, SuccessResponse,
+    ConnectionAddRequest, ConnectionDeleteData, ConnectionKind, ConnectionListData, ConnectionRecord,
+    ExecRunData, ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest,
+    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
+    SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
+    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    SlurmSubmitRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -85,6 +86,18 @@ enum ConnectionSubcommand {
         json: bool,
     },
     List {
+        #[arg(long)]
+        json: bool,
+    },
+    Get {
+        #[arg(long = "id")]
+        connection_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Remove {
+        #[arg(long = "id")]
+        connection_id: String,
         #[arg(long)]
         json: bool,
     },
@@ -261,6 +274,24 @@ fn main() -> Result<()> {
                             };
                             println!("  {} [{}] {}", conn.label, format!("{:?}", conn.kind).to_lowercase(), endpoint);
                         }
+                    }
+                }
+                ConnectionSubcommand::Get { connection_id, json } => {
+                    let payload = get_connection(&runtime, &connection_id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        print_connection_detail(&payload.data);
+                    }
+                }
+                ConnectionSubcommand::Remove { connection_id, json } => {
+                    let payload = remove_connection(&runtime, &connection_id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        println!("Connection removed");
+                        println!("  id: {}", connection_id);
+                        println!("  deleted: {}", payload.data.deleted);
                     }
                 }
             }
@@ -499,6 +530,33 @@ fn list_connections(runtime: &RuntimeFile) -> Result<SuccessResponse<ConnectionL
     )
 }
 
+fn get_connection(runtime: &RuntimeFile, connection_id: &str) -> Result<SuccessResponse<ConnectionRecord>> {
+    send_request_json(
+        http_client()
+            .get(format!(
+                "http://{}:{}/v1/connections/{}",
+                runtime.host, runtime.port, connection_id
+            )),
+        runtime,
+        "failed to decode connection get response",
+    )
+}
+
+fn remove_connection(
+    runtime: &RuntimeFile,
+    connection_id: &str,
+) -> Result<SuccessResponse<ConnectionDeleteData>> {
+    send_request_json(
+        http_client()
+            .delete(format!(
+                "http://{}:{}/v1/connections/{}",
+                runtime.host, runtime.port, connection_id
+            )),
+        runtime,
+        "failed to decode connection remove response",
+    )
+}
+
 fn exec_run(runtime: &RuntimeFile, request: &ExecRunRequest) -> Result<SuccessResponse<ExecRunData>> {
     send_request_json(
         http_client()
@@ -723,6 +781,24 @@ fn print_transfer_text(action: &str, data: &FileTransferData) {
     println!("{} {}", action, data.source_path);
     println!("  to: {}", data.destination_path);
     println!("  recursive: {}", data.recursive);
+}
+
+fn print_connection_detail(connection: &ConnectionRecord) {
+    println!("Connection");
+    println!("  id: {}", connection.id);
+    println!("  label: {}", connection.label);
+    println!("  kind: {}", format!("{:?}", connection.kind).to_lowercase());
+    println!(
+        "  endpoint: {}",
+        match (&connection.host, connection.port, &connection.username) {
+            (Some(host), Some(port), Some(user)) => format!("{user}@{host}:{port}"),
+            _ => "local".to_string(),
+        }
+    );
+    println!(
+        "  jump_host: {}",
+        connection.jump_host.as_deref().unwrap_or("-")
+    );
 }
 
 fn send_request_json<T>(

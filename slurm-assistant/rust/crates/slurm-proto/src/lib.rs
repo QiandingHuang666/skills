@@ -108,6 +108,11 @@ pub struct ConnectionListData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConnectionDeleteData {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecRunRequest {
     pub connection_id: String,
     pub command: String,
@@ -274,6 +279,14 @@ mod tests {
         };
         let json = serde_json::to_string(&value).unwrap();
         let parsed: ConnectionAddRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn connection_delete_response_roundtrip() {
+        let value = SuccessResponse::new(ConnectionDeleteData { deleted: true });
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SuccessResponse<ConnectionDeleteData> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 

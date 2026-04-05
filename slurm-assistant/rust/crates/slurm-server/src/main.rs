@@ -10,7 +10,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{header::AUTHORIZATION, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -19,12 +19,13 @@ use axum::{
 use clap::{Parser, Subcommand};
 use rusqlite::{params, Connection};
 use slurm_proto::{
-    ConnectionAddData, ConnectionAddRequest, ConnectionKind, ConnectionListData, ConnectionRecord,
-    ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, FileDownloadRequest,
-    FileTransferData, FileUploadRequest, PingData, RuntimeFile, ServerStatusData, SlurmCancelData,
-    SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary,
-    SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
-    SlurmStatusGpuRequest, SlurmSubmitData, SlurmSubmitRequest, SuccessResponse,
+    ConnectionAddData, ConnectionAddRequest, ConnectionDeleteData, ConnectionKind,
+    ConnectionListData, ConnectionRecord, ErrorBody, ErrorCode, ErrorResponse, ExecRunData,
+    ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest, PingData,
+    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
+    SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData, SlurmJobsRequest,
+    SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    SlurmSubmitRequest, SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -139,6 +140,10 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/server/status", get(handle_status))
         .route("/v1/connections/list", get(handle_connections_list))
         .route("/v1/connections/add", post(handle_connections_add))
+        .route(
+            "/v1/connections/{id}",
+            get(handle_connections_get).delete(handle_connections_delete),
+        )
         .route("/v1/exec/run", post(handle_exec_run))
         .route("/v1/slurm/status_gpu", post(handle_slurm_status_gpu))
         .route("/v1/slurm/find_gpu", post(handle_slurm_find_gpu))
@@ -197,6 +202,34 @@ async fn handle_connections_add(
         return unauthorized_response();
     }
     match add_connection_to_db(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_connections_get(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(connection_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match get_connection_from_db(&state.db_path, &connection_id) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_connections_delete(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(connection_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match delete_connection_from_db(&state.db_path, &connection_id) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -533,6 +566,16 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
         Err(rusqlite::Error::QueryReturnedNoRows) => Err(anyhow::anyhow!("connection not found: {connection_id}")),
         Err(err) => Err(err).context("failed to decode connection record"),
     }
+}
+
+fn delete_connection_from_db(path: &Path, connection_id: &str) -> Result<ConnectionDeleteData> {
+    let conn = open_db(path)?;
+    let deleted = conn
+        .execute("DELETE FROM connections WHERE id = ?1", [connection_id])
+        .with_context(|| format!("failed to delete connection {connection_id}"))?;
+    Ok(ConnectionDeleteData {
+        deleted: deleted > 0,
+    })
 }
 
 fn execute_command(path: &Path, request: &ExecRunRequest) -> Result<ExecRunData> {
@@ -1658,5 +1701,32 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
 
         let copied = dst_dir.join("src.txt");
         assert_eq!(fs::read_to_string(copied).unwrap(), "hello");
+    }
+
+    #[test]
+    fn connection_get_and_delete_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let created = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-cluster".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Cluster,
+                jump_host: None,
+            },
+        )
+        .unwrap();
+
+        let record = get_connection_from_db(&db_path, &created.connection_id).unwrap();
+        assert_eq!(record.label, "gzu-cluster");
+
+        let deleted = delete_connection_from_db(&db_path, &created.connection_id).unwrap();
+        assert!(deleted.deleted);
+        let missing = get_connection_from_db(&db_path, &created.connection_id).unwrap_err();
+        assert!(missing.to_string().contains("connection not found"));
     }
 }
