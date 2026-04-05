@@ -122,6 +122,12 @@ pub struct ExecRunData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmJobsRequest {
+    pub connection_id: String,
+    pub job_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlurmJob {
     pub job_id: String,
     pub partition: String,
@@ -195,6 +201,17 @@ mod tests {
         });
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SuccessResponse<SlurmJobsData> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn slurm_jobs_request_roundtrip() {
+        let value = SlurmJobsRequest {
+            connection_id: "conn_gzu_cluster".to_string(),
+            job_id: Some("57373".to_string()),
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SlurmJobsRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 
