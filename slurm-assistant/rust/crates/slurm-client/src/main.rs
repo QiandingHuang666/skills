@@ -11,7 +11,8 @@ use slurm_proto::{
     ConnectionAddRequest, ConnectionKind, ConnectionListData, ExecRunData, ExecRunRequest,
     RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
     SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
-    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SuccessResponse,
+    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    SlurmSubmitRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -30,6 +31,7 @@ enum Command {
     Jobs(JobsCommand),
     Log(LogCommand),
     Status(StatusCommand),
+    Submit(SubmitCommand),
     Server(ServerCommand),
 }
 
@@ -134,6 +136,15 @@ struct FindGpuCommand {
     #[arg(long = "connection")]
     connection_id: String,
     gpu_type: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct SubmitCommand {
+    script_path: String,
+    #[arg(long = "connection")]
+    connection_id: String,
     #[arg(long)]
     json: bool,
 }
@@ -336,6 +347,22 @@ fn main() -> Result<()> {
                 print_find_gpu_text(&payload.data);
             }
         }
+        Command::Submit(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = submit_query(
+                &runtime,
+                &SlurmSubmitRequest {
+                    connection_id: cmd.connection_id,
+                    script_path: cmd.script_path,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!("{}", payload.data.raw_output);
+                println!("job_id: {}", payload.data.job_id);
+            }
+        }
         Command::Server(cmd) => match cmd.command {
             ServerSubcommand::Status { json } => {
                 let runtime = read_runtime_file(&runtime_file_path()?)?;
@@ -458,6 +485,19 @@ fn cancel_query(
             .json(request),
         runtime,
         "failed to decode cancel response",
+    )
+}
+
+fn submit_query(
+    runtime: &RuntimeFile,
+    request: &SlurmSubmitRequest,
+) -> Result<SuccessResponse<SlurmSubmitData>> {
+    send_request_json(
+        http_client()
+            .post(format!("http://{}:{}/v1/slurm/submit", runtime.host, runtime.port))
+            .json(request),
+        runtime,
+        "failed to decode submit response",
     )
 }
 

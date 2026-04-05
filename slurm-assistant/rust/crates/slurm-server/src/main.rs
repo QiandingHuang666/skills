@@ -23,7 +23,8 @@ use slurm_proto::{
     ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, PingData, RuntimeFile,
     ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest,
     SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
-    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SuccessResponse,
+    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    SlurmSubmitRequest, SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -144,6 +145,7 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/slurm/jobs", post(handle_slurm_jobs))
         .route("/v1/slurm/cancel", post(handle_slurm_cancel))
         .route("/v1/slurm/log", post(handle_slurm_log))
+        .route("/v1/slurm/submit", post(handle_slurm_submit))
         .with_state(state)
 }
 
@@ -277,6 +279,20 @@ async fn handle_slurm_cancel(
         return unauthorized_response();
     }
     match query_slurm_cancel(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_slurm_submit(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SlurmSubmitRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match query_slurm_submit(&state.db_path, &request) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -628,6 +644,23 @@ fn query_slurm_cancel(path: &Path, request: &SlurmCancelRequest) -> Result<Slurm
     })
 }
 
+fn query_slurm_submit(path: &Path, request: &SlurmSubmitRequest) -> Result<SlurmSubmitData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    let command = build_sbatch_command(&request.script_path)?;
+    let (program, args) = build_exec_program(&connection, &command)?;
+    let output = run_process(program, &args, 30)?;
+    if output.exit_code != 0 {
+        return Err(anyhow::anyhow!(
+            "sbatch failed with exit code {}: {}",
+            output.exit_code,
+            output.stderr.trim()
+        ));
+    }
+    let raw_output = output.stdout.trim().to_string();
+    let job_id = parse_submitted_job_id(&raw_output)?;
+    Ok(SlurmSubmitData { job_id, raw_output })
+}
+
 fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(String, Vec<String>)> {
     match connection.kind {
         ConnectionKind::Local => {
@@ -696,6 +729,35 @@ fn build_scancel_command(job_ids: &[String]) -> Result<String> {
         }
     }
     Ok(format!("scancel {}", job_ids.join(" ")))
+}
+
+fn build_sbatch_command(script_path: &str) -> Result<String> {
+    if script_path.trim().is_empty() {
+        return Err(anyhow::anyhow!("script path must not be empty"));
+    }
+    if script_path.contains('\'') {
+        return Err(anyhow::anyhow!("script path must not contain single quotes"));
+    }
+    let rendered_path = if script_path == "~" {
+        "$HOME".to_string()
+    } else if let Some(rest) = script_path.strip_prefix("~/") {
+        format!("$HOME/'{rest}'")
+    } else {
+        format!("'{script_path}'")
+    };
+    Ok(format!("sbatch {rendered_path}"))
+}
+
+fn parse_submitted_job_id(raw_output: &str) -> Result<String> {
+    let captures = regex::Regex::new(r"Submitted batch job (\d+)")
+        .context("failed to compile submit regex")?
+        .captures(raw_output)
+        .ok_or_else(|| anyhow::anyhow!("failed to parse submitted job id from output: {raw_output}"))?;
+    Ok(captures
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("submit output missing job id capture"))?
+        .as_str()
+        .to_string())
 }
 
 fn local_username() -> Option<String> {
@@ -1345,5 +1407,28 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         assert!(err.to_string().contains("invalid job id"));
         let err = build_scancel_command(&[]).unwrap_err();
         assert!(err.to_string().contains("at least one job id"));
+    }
+
+    #[test]
+    fn build_sbatch_command_validates_script_path() {
+        assert_eq!(build_sbatch_command("job.sh").unwrap(), "sbatch 'job.sh'");
+        assert_eq!(
+            build_sbatch_command("~/job.sh").unwrap(),
+            "sbatch $HOME/'job.sh'"
+        );
+        let err = build_sbatch_command("").unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+        let err = build_sbatch_command("bad'quote.sh").unwrap_err();
+        assert!(err.to_string().contains("single quotes"));
+    }
+
+    #[test]
+    fn parse_submitted_job_id_extracts_job_id() {
+        assert_eq!(
+            parse_submitted_job_id("Submitted batch job 60001").unwrap(),
+            "60001"
+        );
+        let err = parse_submitted_job_id("submission failed").unwrap_err();
+        assert!(err.to_string().contains("failed to parse submitted job id"));
     }
 }
