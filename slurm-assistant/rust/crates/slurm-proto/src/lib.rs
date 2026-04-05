@@ -189,6 +189,19 @@ pub struct SlurmJobsData {
     pub jobs: Vec<SlurmJob>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmLogRequest {
+    pub connection_id: String,
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmLogData {
+    pub job_id: String,
+    pub found: bool,
+    pub content: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,6 +305,18 @@ mod tests {
         };
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SlurmFindGpuRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn slurm_log_response_roundtrip() {
+        let value = SuccessResponse::new(SlurmLogData {
+            job_id: "57373".to_string(),
+            found: true,
+            content: "training started\n".to_string(),
+        });
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SuccessResponse<SlurmLogData> = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 

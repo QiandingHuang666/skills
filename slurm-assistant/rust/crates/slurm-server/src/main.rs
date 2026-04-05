@@ -22,8 +22,8 @@ use slurm_proto::{
     ConnectionAddData, ConnectionAddRequest, ConnectionKind, ConnectionListData, ConnectionRecord,
     ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, PingData, RuntimeFile,
     ServerStatusData, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary,
-    SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmStatusGpuData, SlurmStatusGpuRequest,
-    SuccessResponse,
+    SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
+    SlurmStatusGpuRequest, SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -142,6 +142,7 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/slurm/status_gpu", post(handle_slurm_status_gpu))
         .route("/v1/slurm/find_gpu", post(handle_slurm_find_gpu))
         .route("/v1/slurm/jobs", post(handle_slurm_jobs))
+        .route("/v1/slurm/log", post(handle_slurm_log))
         .with_state(state)
 }
 
@@ -247,6 +248,20 @@ async fn handle_slurm_find_gpu(
         return unauthorized_response();
     }
     match query_slurm_find_gpu(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_slurm_log(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SlurmLogRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match query_slurm_log(&state.db_path, &request) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -559,6 +574,28 @@ fn query_slurm_find_gpu(path: &Path, request: &SlurmFindGpuRequest) -> Result<Sl
     })
 }
 
+fn query_slurm_log(path: &Path, request: &SlurmLogRequest) -> Result<SlurmLogData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    let command = build_slurm_log_command(&request.job_id)?;
+    let (program, args) = build_exec_program(&connection, &command)?;
+    let output = run_process(program, &args, 30)?;
+    if output.exit_code != 0 {
+        return Err(anyhow::anyhow!(
+            "log query failed with exit code {}: {}",
+            output.exit_code,
+            output.stderr.trim()
+        ));
+    }
+
+    let content = output.stdout;
+    let found = content != "Log file not found";
+    Ok(SlurmLogData {
+        job_id: request.job_id.clone(),
+        found,
+        content,
+    })
+}
+
 fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(String, Vec<String>)> {
     match connection.kind {
         ConnectionKind::Local => {
@@ -597,6 +634,20 @@ fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(S
             Ok(("ssh".to_string(), args))
         }
     }
+}
+
+fn build_slurm_log_command(job_id: &str) -> Result<String> {
+    if job_id.is_empty()
+        || !job_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err(anyhow::anyhow!("invalid job id for log query: {job_id}"));
+    }
+    let log_file = format!("slurm-{job_id}.out");
+    Ok(format!(
+        "test -f {log_file} && cat {log_file} || printf 'Log file not found'"
+    ))
 }
 
 fn local_username() -> Option<String> {
@@ -1196,5 +1247,43 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         assert!(matches_token("gpu-a10", "gpu-a10"));
         assert!(matches_token("gpu-a10,gpu-share", "gpu-share"));
         assert!(!matches_token("gpu-a100", "gpu-a10"));
+    }
+
+    #[test]
+    fn build_slurm_log_command_rejects_invalid_job_id() {
+        let err = build_slurm_log_command("57373;rm -rf /").unwrap_err();
+        assert!(err.to_string().contains("invalid job id"));
+    }
+
+    #[test]
+    fn log_missing_file_is_well_formed() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let data = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "local".to_string(),
+                host: None,
+                port: None,
+                username: None,
+                kind: ConnectionKind::Local,
+                jump_host: None,
+            },
+        )
+        .unwrap();
+
+        let result = query_slurm_log(
+            &db_path,
+            &SlurmLogRequest {
+                connection_id: data.connection_id,
+                job_id: "999999999".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(result.job_id, "999999999");
+        assert!(!result.found);
+        assert_eq!(result.content, "Log file not found");
     }
 }

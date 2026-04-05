@@ -10,7 +10,8 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use slurm_proto::{
     ConnectionAddRequest, ConnectionKind, ConnectionListData, ExecRunData, ExecRunRequest,
     RuntimeFile, ServerStatusData, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode,
-    SlurmJobsData, SlurmJobsRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SuccessResponse,
+    SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
+    SlurmStatusGpuRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -26,6 +27,7 @@ enum Command {
     Exec(ExecCommand),
     FindGpu(FindGpuCommand),
     Jobs(JobsCommand),
+    Log(LogCommand),
     Status(StatusCommand),
     Server(ServerCommand),
 }
@@ -92,6 +94,15 @@ struct JobsCommand {
     connection_id: String,
     #[arg(long = "job-id")]
     job_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct LogCommand {
+    job_id: String,
+    #[arg(long = "connection")]
+    connection_id: String,
     #[arg(long)]
     json: bool,
 }
@@ -244,6 +255,26 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Command::Log(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = log_query(
+                &runtime,
+                &SlurmLogRequest {
+                    connection_id: cmd.connection_id,
+                    job_id: cmd.job_id,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else if !payload.data.found {
+                println!("{}", payload.data.content);
+            } else {
+                print!("{}", payload.data.content);
+                if !payload.data.content.ends_with('\n') {
+                    println!();
+                }
+            }
+        }
         Command::Status(cmd) => {
             if !cmd.gpu {
                 bail!("only `status --gpu` is implemented right now");
@@ -373,6 +404,19 @@ fn jobs_query(
             .json(request),
         runtime,
         "failed to decode jobs response",
+    )
+}
+
+fn log_query(
+    runtime: &RuntimeFile,
+    request: &SlurmLogRequest,
+) -> Result<SuccessResponse<SlurmLogData>> {
+    send_request_json(
+        http_client()
+            .post(format!("http://{}:{}/v1/slurm/log", runtime.host, runtime.port))
+            .json(request),
+        runtime,
+        "failed to decode log response",
     )
 }
 
