@@ -1,0 +1,46 @@
+name: slurm-assistant-eval
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'slurm-assistant/SKILL.md'
+      - 'slurm-assistant/references/**'
+      - 'slurm-assistant/scripts/slurm-cli.py'
+      - 'slurm-assistant/evals/**'
+      - '.github/workflows/slurm-assistant-eval.yml'
+
+jobs:
+  trace-structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Validate eval files
+        run: |
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('slurm-assistant/evals/cases.json')
+          data = json.loads(p.read_text(encoding='utf-8'))
+          assert isinstance(data, list) and data, 'cases.json must be a non-empty list'
+          print(f'loaded {len(data)} cases')
+          PY
+
+  live-cluster:
+    if: ${{ secrets.GZU_SSH_KEY != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.GZU_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+      - name: Run live eval
+        run: |
+          python slurm-assistant/evals/run_live_eval.py live

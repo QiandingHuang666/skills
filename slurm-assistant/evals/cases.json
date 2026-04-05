@@ -1,0 +1,122 @@
+[
+  {
+    "name": "init_check_fast",
+    "category": "preflight",
+    "prompt": "会话开始后先检查配置状态。",
+    "trace_rules": {
+      "must_contain_commands": [
+        "init --check --output-json --fast"
+      ],
+      "must_not_contain_commands": []
+    },
+    "live_probe": {
+      "argv": ["init", "--check", "--output-json", "--fast"],
+      "parser": "init_check",
+      "assert": {
+        "fields_present": [
+          "configured",
+          "config_valid",
+          "local_slurm_available",
+          "connection_count",
+          "connections",
+          "current_agent_authorized"
+        ]
+      }
+    }
+  },
+  {
+    "name": "connection_list",
+    "category": "routing",
+    "prompt": "多连接时应先查看连接列表再决定使用哪个连接。",
+    "trace_rules": {
+      "must_contain_commands": [
+        "connection --list"
+      ],
+      "must_not_contain_commands": []
+    },
+    "live_probe": {
+      "argv": ["connection", "--list"],
+      "parser": "connection_list",
+      "assert": {
+        "min_rows": 1,
+        "at_least_one_active": true
+      }
+    }
+  },
+  {
+    "name": "gpu_status",
+    "category": "read-only",
+    "prompt": "查看 GPU 资源时，应优先使用 status --gpu 或 find-gpu，并能从返回中读出可用节点和空闲 GPU 总数。",
+    "trace_rules": {
+      "must_contain_one_of_commands": [
+        ["status --gpu", "find-gpu"]
+      ],
+      "must_not_contain_commands": [
+        "exec -c .*scontrol show node"
+      ]
+    },
+    "live_probe": {
+      "argv": ["status", "--gpu"],
+      "parser": "gpu_status",
+      "assert": {
+        "must_have_summary": true,
+        "summary_fields": ["available_nodes", "total_gpu", "idle_gpu"]
+      }
+    }
+  },
+  {
+    "name": "find_gpu",
+    "category": "read-only",
+    "prompt": "查找 GPU 时应能从 find-gpu 输出中区分可用节点、忙节点和排空节点。",
+    "trace_rules": {
+      "must_contain_commands": [
+        "find-gpu"
+      ],
+      "must_not_contain_commands": []
+    },
+    "live_probe": {
+      "argv": ["find-gpu"],
+      "parser": "find_gpu",
+      "assert": {
+        "must_have_summary": true,
+        "summary_fields": ["available_nodes", "idle_gpu"]
+      }
+    }
+  },
+  {
+    "name": "jobs_output",
+    "category": "read-only",
+    "prompt": "查看作业时，模型应能从 jobs 输出中识别表头和作业行；如果无作业，也要正确说明为空。",
+    "trace_rules": {
+      "must_contain_commands": [
+        "jobs"
+      ],
+      "must_not_contain_commands": []
+    },
+    "live_probe": {
+      "argv": ["jobs"],
+      "parser": "jobs_table",
+      "assert": {
+        "accept_empty": true
+      }
+    }
+  },
+  {
+    "name": "log_missing_file",
+    "category": "read-only",
+    "prompt": "查看不存在的日志文件时，模型应能识别出“Log file not found”而不是误判为脚本错误。",
+    "trace_rules": {
+      "must_contain_commands": [
+        "log 0"
+      ],
+      "must_not_contain_commands": []
+    },
+    "live_probe": {
+      "argv": ["log", "0"],
+      "parser": "plain_text",
+      "assert": {
+        "must_contain_text": ["Log file not found"]
+      }
+    }
+  }
+]

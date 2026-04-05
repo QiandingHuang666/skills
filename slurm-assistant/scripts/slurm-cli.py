@@ -451,7 +451,9 @@ class SlurmExecutor:
                 text=True,
                 creationflags=creation_flags
             )
-            return result.stdout
+            if result.returncode == 0:
+                return result.stdout
+            return result.stdout or result.stderr
         else:
             cluster = self.config.get_cluster_info()
             host = cluster.get("host", "")
@@ -479,7 +481,9 @@ class SlurmExecutor:
                 shell=use_shell,
                 creationflags=creation_flags if not use_shell else 0
             )
-            return result.stdout
+            if result.returncode == 0:
+                return result.stdout
+            return result.stdout or result.stderr
 
     def transfer(self, src: str, dst: str, download: bool = False, recursive: bool = False) -> bool:
         """使用 scp 传输文件"""
@@ -1391,6 +1395,9 @@ def _show_gpu_status(executor: SlurmExecutor, partition: Optional[str] = None):
 
     if not available_nodes and not drain_nodes:
         print_info("No GPU nodes found")
+        print("\n" + "=" * 50)
+        print("汇总统计:")
+        print("  可用节点: 0 个，共 0 张 GPU，0 张空闲")
         return
 
     # 按分区和节点名排序
@@ -1784,6 +1791,10 @@ def cmd_find_gpu(args):
 
     if not available_nodes and not drain_nodes:
         print_info("No matching GPU nodes found")
+        print("\n" + "=" * 50)
+        print("汇总统计:")
+        print("  可用节点: 0 个，共 0 张 GPU")
+        print("  当前空闲: 0 张 GPU")
         return
 
     # 按分区和节点名排序
@@ -2059,14 +2070,21 @@ def cmd_jobs(args):
     if args.id:
         cmd = f"squeue -j {args.id}"
     else:
-        # 使用环境变量获取用户名，更安全可靠
-        username = os.environ.get('USER') or os.environ.get('USERNAME')
+        # 优先使用配置中的远程用户名；本地模式再回退到环境变量
+        username = config.get_cluster_info().get("username")
+        if not username:
+            username = os.environ.get('USER') or os.environ.get('USERNAME')
         if not username:
             die("Unable to get username")
         cmd = f"squeue -u {username}"
 
     cmd += " -o '%.8i %.9P %.30j %.8u %.2t %.10M %.6D %R'"
     output = executor.run(cmd)
+    if not output.strip():
+        print("JOBID    PARTITION NAME                           USER     ST TIME       NODES NODELIST(REASON)")
+        print("-----------------------------------------------------------------------------------------------")
+        print("[EMPTY] No jobs found")
+        return
     print(output)
 
 
@@ -2094,7 +2112,10 @@ def cmd_log(args):
             print(f"  ssh -p {config.get_cluster_info().get('port', 22)} {config.get_cluster_info().get('username')}@{config.get_cluster_info().get('host')} 'tail -f {log_file}'")
         return
 
-    output = executor.run(f"cat {log_file} 2>/dev/null || echo 'Log file not found'")
+    output = executor.run(f"test -f {log_file} && cat {log_file} || echo 'Log file not found'")
+    if not output.strip():
+        print("Log file not found")
+        return
     print(output)
 
 

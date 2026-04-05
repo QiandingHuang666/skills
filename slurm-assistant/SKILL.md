@@ -21,6 +21,172 @@ description: |
 
 ---
 
+## 最小决策树（主流程）
+
+先按下面的最小流程执行；只有在当前步骤缺信息时，才读取对应的 `references/*.md`。
+
+### Step 0：确定脚本路径
+
+优先使用：
+
+```bash
+SCRIPT="/absolute/path/to/slurm-assistant/scripts/slurm-cli.py"
+```
+
+如果路径未知，再使用：
+
+```bash
+uv run python "$SCRIPT" path --json
+```
+
+### Step 1：先做配置检查
+
+每次会话开始先执行：
+
+```bash
+uv run python "$SCRIPT" init --check --output-json --fast
+```
+
+只根据这几个字段决策：
+
+- `configured`
+- `config_valid`
+- `local_slurm_available`
+- `connection_count`
+- `connections`
+- `current_agent_authorized`
+
+### Step 2：按检查结果分流
+
+#### A. `configured = false`
+
+不要直接猜配置。先判断用户是在“本地模式”还是“远程模式”：
+
+- 用户明确说“我已经在集群/登录节点上”  
+  → 走本地模式，读取 `references/workflow_local_execution.md`
+- 否则  
+  → 走首次远程配置，读取 `references/workflow_init.md`
+
+#### B. `configured = true` 且 `config_valid = false`
+
+停止后续操作，先修配置问题：
+
+- 远程连接问题 → `references/workflow_init.md`
+- 本地 Slurm 不可用 → `references/workflow_local_execution.md`
+
+#### C. `configured = true` 且 `config_valid = true`
+
+进入正常执行流程：
+
+- `connection_count <= 1`：直接用当前活动连接
+- `connection_count > 1`：先执行
+
+  ```bash
+  uv run python "$SCRIPT" connection --list
+  ```
+
+  再按用户意图选连接：
+  - 说“集群” → 选 `type=cluster`
+  - 说“实例” → 选 `type=instance`
+  - 提到端口 → 匹配端口对应连接
+  - 不明确 → 先澄清，不要猜
+
+  后续命令统一优先用 `-C <连接名>` 临时切换，不要默认永久改活动连接。
+
+### Step 3：把用户请求归到 6 类动作
+
+只需先分类，再执行，不要一上来读所有参考文档。
+
+1. **资源查看**
+   - 关键词：状态、GPU、分区、节点、排队
+   - 优先命令：
+     ```bash
+     uv run python "$SCRIPT" status --gpu
+     uv run python "$SCRIPT" find-gpu
+     uv run python "$SCRIPT" partition-info
+     uv run python "$SCRIPT" node-info <节点名>
+     ```
+   - 需要细节时再读：`references/workflow_status.md`
+
+2. **作业管理**
+   - 关键词：submit、jobs、log、cancel、alloc、srun
+   - 优先命令：
+     ```bash
+     uv run python "$SCRIPT" submit <脚本>
+     uv run python "$SCRIPT" jobs
+     uv run python "$SCRIPT" log <job_id>
+     uv run python "$SCRIPT" cancel <job_id>
+     uv run python "$SCRIPT" alloc -p <分区> [-g gpu:1]
+     ```
+   - 生成/提交流程再读：`references/workflow_job.md`
+
+3. **文件传输**
+   - 关键词：上传、下载、拷文件、日志拉回本地
+   - 优先命令：
+     ```bash
+     uv run python "$SCRIPT" upload <本地> <远程>
+     uv run python "$SCRIPT" download <远程> <本地>
+     ```
+   - 需要细节时再读：`references/workflow_file_transfer.md`
+
+4. **环境配置**
+   - 关键词：conda、uv、CUDA、PyTorch、环境安装
+   - 先判断是否涉及重操作；如涉及安装/编译/大下载，不能在登录节点直接做
+   - 再读：`references/workflow_env_config.md`
+
+5. **实例连接 / 多连接**
+   - 关键词：连接实例、切换实例、实例端口
+   - 先执行：
+     ```bash
+     uv run python "$SCRIPT" connection --list
+     ```
+   - 再读：本文件“实例连接流程”或 `references/workflow_init.md`
+
+6. **任意远程命令**
+   - 只有当现有子命令覆盖不了用户需求时，才使用：
+     ```bash
+     uv run python "$SCRIPT" exec -c '<命令>'
+     ```
+   - 执行前必须做安全分类，见下文“安全分流”。
+
+### Step 4：安全分流
+
+先判断命令属于哪一类：
+
+- **A 类：只读/轻量**  
+  如 `squeue`、`sinfo`、`ls`、`cat`、`grep`、`head`、`tail`  
+  → 可直接执行
+
+- **B 类：会改用户目录，但通常可逆**  
+  如新建目录、写脚本、上传下载、提交普通作业  
+  → 可以执行，但要先简要说明会改什么
+
+- **C 类：高成本或应避开登录节点**  
+  如大规模下载、编译、大包安装、长时间数据处理  
+  → 不要在登录节点直接做；先引导 `alloc`/`sbatch`
+
+- **D 类：危险/破坏性**  
+  如 `rm -rf`、`dd`、`chmod 000`、`shutdown`、批量 kill  
+  → 必须先明确确认；不确认不执行
+
+### Step 5：输出要求
+
+- 优先给“结论 + 下一步”，不要先贴长日志
+- 命令输出只保留关键行
+- 如果用了某个 reference，在回答中只吸收其必要步骤，不要整段复述
+
+### 何时读取哪份参考文档
+
+- 首次配置 / 修配置：`references/workflow_init.md`
+- 本地模式：`references/workflow_local_execution.md`
+- 资源状态：`references/workflow_status.md`
+- 作业脚本 / 提交：`references/workflow_job.md`
+- 文件传输：`references/workflow_file_transfer.md`
+- 环境配置：`references/workflow_env_config.md`
+- 贵州大学特例：`references/gzu_public_resources.md`
+
+---
+
 ## ⛔ 不可违背原则
 
 **禁止在登录节点进行任何费资源操作！**
