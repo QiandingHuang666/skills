@@ -1,8 +1,10 @@
 use std::{
     env,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,7 +21,9 @@ use rusqlite::{params, Connection};
 use slurm_proto::{
     ConnectionAddData, ConnectionAddRequest, ConnectionKind, ConnectionListData, ConnectionRecord,
     ErrorBody, ErrorCode, ErrorResponse, ExecRunData, ExecRunRequest, PingData, RuntimeFile,
-    ServerStatusData, SlurmJob, SlurmJobsData, SlurmJobsRequest, SuccessResponse,
+    ServerStatusData, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary,
+    SlurmJob, SlurmJobsData, SlurmJobsRequest, SlurmStatusGpuData, SlurmStatusGpuRequest,
+    SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -50,6 +54,18 @@ struct ServerState {
     token: String,
     status: ServerStatusData,
     db_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedGpuNode {
+    node: String,
+    partition: String,
+    gpu_idle: u32,
+    gpu_total: u32,
+    gpu_type: String,
+    cpu_idle: u32,
+    cpu_total: u32,
+    is_drain: bool,
 }
 
 #[tokio::main]
@@ -123,6 +139,8 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/connections/list", get(handle_connections_list))
         .route("/v1/connections/add", post(handle_connections_add))
         .route("/v1/exec/run", post(handle_exec_run))
+        .route("/v1/slurm/status_gpu", post(handle_slurm_status_gpu))
+        .route("/v1/slurm/find_gpu", post(handle_slurm_find_gpu))
         .route("/v1/slurm/jobs", post(handle_slurm_jobs))
         .with_state(state)
 }
@@ -201,6 +219,34 @@ async fn handle_slurm_jobs(
         return unauthorized_response();
     }
     match query_slurm_jobs(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_slurm_status_gpu(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SlurmStatusGpuRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match query_slurm_status_gpu(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_slurm_find_gpu(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SlurmFindGpuRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match query_slurm_find_gpu(&state.db_path, &request) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -448,6 +494,71 @@ fn query_slurm_jobs(path: &Path, request: &SlurmJobsRequest) -> Result<SlurmJobs
     })
 }
 
+fn query_slurm_status_gpu(path: &Path, request: &SlurmStatusGpuRequest) -> Result<SlurmStatusGpuData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    let nodes = query_scontrol_gpu_nodes(&connection)?;
+
+    let matches_partition = |node: &ParsedGpuNode| {
+        request
+            .partition
+            .as_ref()
+            .map(|partition| matches_token(&node.partition, partition))
+            .unwrap_or(true)
+    };
+
+    let mut available_nodes = Vec::new();
+    let mut drain_nodes = Vec::new();
+    for node in nodes.into_iter().filter(matches_partition) {
+        if node.is_drain {
+            drain_nodes.push(gpu_node_public(&node));
+        } else {
+            available_nodes.push(gpu_node_public(&node));
+        }
+    }
+
+    Ok(SlurmStatusGpuData {
+        summary: gpu_summary(&available_nodes),
+        available_nodes,
+        drain_nodes,
+    })
+}
+
+fn query_slurm_find_gpu(path: &Path, request: &SlurmFindGpuRequest) -> Result<SlurmFindGpuData> {
+    let connection = get_connection_from_db(path, &request.connection_id)?;
+    let nodes = query_scontrol_gpu_nodes(&connection)?;
+
+    let matches_gpu_type = |node: &ParsedGpuNode| {
+        request
+            .gpu_type
+            .as_ref()
+            .map(|gpu_type| node.gpu_type.eq_ignore_ascii_case(gpu_type))
+            .unwrap_or(true)
+    };
+
+    let mut available_nodes = Vec::new();
+    let mut busy_nodes = Vec::new();
+    let mut drain_nodes = Vec::new();
+    for node in nodes.into_iter().filter(matches_gpu_type) {
+        let public = gpu_node_public(&node);
+        if node.is_drain {
+            drain_nodes.push(public);
+        } else if node.gpu_idle > 0 {
+            available_nodes.push(public);
+        } else {
+            busy_nodes.push(public);
+        }
+    }
+
+    let mut summary_nodes = available_nodes.clone();
+    summary_nodes.extend(busy_nodes.clone());
+    Ok(SlurmFindGpuData {
+        summary: gpu_summary(&summary_nodes),
+        available_nodes,
+        busy_nodes,
+        drain_nodes,
+    })
+}
+
 fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(String, Vec<String>)> {
     match connection.kind {
         ConnectionKind::Local => {
@@ -495,6 +606,192 @@ fn local_username() -> Option<String> {
         .or_else(|| env::var("USERNAME").ok().filter(|value| !value.is_empty()))
 }
 
+fn query_scontrol_gpu_nodes(connection: &ConnectionRecord) -> Result<Vec<ParsedGpuNode>> {
+    let (program, args) = build_exec_program(connection, "scontrol show node")?;
+    let output = run_process(program, &args, 30)?;
+    if output.exit_code != 0 {
+        return Err(anyhow::anyhow!(
+            "scontrol show node failed with exit code {}: {}",
+            output.exit_code,
+            output.stderr.trim()
+        ));
+    }
+    parse_scontrol_gpu_nodes_output(&output.stdout)
+}
+
+fn matches_token(haystack: &str, needle: &str) -> bool {
+    haystack
+        .split(',')
+        .map(|token| token.trim())
+        .any(|token| token.eq_ignore_ascii_case(needle))
+}
+
+fn parse_gpu_gres(gres: &str) -> (u32, String) {
+    let lower = gres.to_ascii_lowercase();
+    let typed = regex_extract(&lower, r"gpu:([a-zA-Z_]\w*):(\d+)");
+    if let Some((gpu_type, count)) = typed {
+        if let Ok(count) = count.parse::<u32>() {
+            return (count, gpu_type.to_string());
+        }
+    }
+    let simple = regex_extract_single(&lower, r"gpu:(\d+)");
+    if let Some(count) = simple.and_then(|value| value.parse::<u32>().ok()) {
+        return (count, "unknown".to_string());
+    }
+    (0, String::new())
+}
+
+fn regex_extract<'a>(value: &'a str, pattern: &'a str) -> Option<(&'a str, &'a str)> {
+    let captures = regex::Regex::new(pattern).ok()?.captures(value)?;
+    Some((captures.get(1)?.as_str(), captures.get(2)?.as_str()))
+}
+
+fn regex_extract_single<'a>(value: &'a str, pattern: &'a str) -> Option<&'a str> {
+    let captures = regex::Regex::new(pattern).ok()?.captures(value)?;
+    Some(captures.get(1)?.as_str())
+}
+
+fn parse_scontrol_gpu_nodes_output(stdout: &str) -> Result<Vec<ParsedGpuNode>> {
+    let mut nodes = Vec::new();
+    let mut current_node: Option<String> = None;
+    let mut current_gres: Option<String> = None;
+    let mut current_alloc_tres: Option<String> = None;
+    let mut current_partition: Option<String> = None;
+    let mut current_cpu_alloc: Option<u32> = None;
+    let mut current_cpu_total: Option<u32> = None;
+    let mut current_state: Option<String> = None;
+
+    let flush_current = |nodes: &mut Vec<ParsedGpuNode>,
+                         current_node: &mut Option<String>,
+                         current_gres: &mut Option<String>,
+                         current_alloc_tres: &mut Option<String>,
+                         current_partition: &mut Option<String>,
+                         current_cpu_alloc: &mut Option<u32>,
+                         current_cpu_total: &mut Option<u32>,
+                         current_state: &mut Option<String>| {
+        let Some(node_name) = current_node.take() else {
+            return;
+        };
+        let Some(gres) = current_gres.take() else {
+            return;
+        };
+        if !gres.to_ascii_lowercase().contains("gpu") {
+            return;
+        }
+
+        let (gpu_total, gpu_type) = parse_gpu_gres(&gres);
+        if gpu_total == 0 {
+            return;
+        }
+
+        let gpu_alloc = current_alloc_tres
+            .as_ref()
+            .and_then(|value| regex_extract_single(value, r"gres/gpu=(\d+)"))
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let cpu_total = current_cpu_total.unwrap_or(0);
+        let cpu_alloc = current_cpu_alloc.unwrap_or(0);
+        let cpu_idle = cpu_total.saturating_sub(cpu_alloc);
+        let state = current_state.take().unwrap_or_else(|| "UNKNOWN".to_string());
+        nodes.push(ParsedGpuNode {
+            node: node_name,
+            partition: current_partition
+                .take()
+                .unwrap_or_else(|| "unknown".to_string()),
+            gpu_idle: gpu_total.saturating_sub(gpu_alloc),
+            gpu_total,
+            gpu_type: if gpu_type.is_empty() {
+                "GPU".to_string()
+            } else {
+                gpu_type.to_ascii_uppercase()
+            },
+            cpu_idle,
+            cpu_total,
+            is_drain: state.to_ascii_uppercase().contains("DRAIN"),
+        });
+        current_alloc_tres.take();
+        current_cpu_alloc.take();
+        current_cpu_total.take();
+    };
+
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if let Some(rest) = line.strip_prefix("NodeName=") {
+            flush_current(
+                &mut nodes,
+                &mut current_node,
+                &mut current_gres,
+                &mut current_alloc_tres,
+                &mut current_partition,
+                &mut current_cpu_alloc,
+                &mut current_cpu_total,
+                &mut current_state,
+            );
+            let node_name = rest.split_whitespace().next().unwrap_or_default();
+            if !node_name.is_empty() {
+                current_node = Some(node_name.to_string());
+            }
+            continue;
+        }
+        if let Some(state) = line.strip_prefix("State=") {
+            current_state = Some(state.to_string());
+            continue;
+        }
+        if let Some(gres) = line.strip_prefix("Gres=") {
+            current_gres = Some(gres.to_string());
+            continue;
+        }
+        if let Some(partition) = line.strip_prefix("Partitions=") {
+            current_partition = Some(partition.to_string());
+            continue;
+        }
+        if let Some(alloc_tres) = line.strip_prefix("AllocTRES=") {
+            current_alloc_tres = Some(alloc_tres.to_string());
+            continue;
+        }
+        if line.contains("CPUAlloc=") {
+            current_cpu_alloc = regex_extract_single(line, r"CPUAlloc=(\d+)")
+                .and_then(|value| value.parse::<u32>().ok());
+        }
+        if line.contains("CPUTot=") {
+            current_cpu_total = regex_extract_single(line, r"CPUTot=(\d+)")
+                .and_then(|value| value.parse::<u32>().ok());
+        }
+    }
+
+    flush_current(
+        &mut nodes,
+        &mut current_node,
+        &mut current_gres,
+        &mut current_alloc_tres,
+        &mut current_partition,
+        &mut current_cpu_alloc,
+        &mut current_cpu_total,
+        &mut current_state,
+    );
+    Ok(nodes)
+}
+
+fn gpu_node_public(node: &ParsedGpuNode) -> SlurmGpuNode {
+    SlurmGpuNode {
+        node: node.node.clone(),
+        partition: node.partition.clone(),
+        gpu_idle: node.gpu_idle,
+        gpu_total: node.gpu_total,
+        gpu_type: node.gpu_type.clone(),
+        cpu_idle: node.cpu_idle,
+        cpu_total: node.cpu_total,
+    }
+}
+
+fn gpu_summary(nodes: &[SlurmGpuNode]) -> SlurmGpuSummary {
+    SlurmGpuSummary {
+        available_nodes: nodes.len() as u32,
+        total_gpu: nodes.iter().map(|node| node.gpu_total).sum(),
+        idle_gpu: nodes.iter().map(|node| node.gpu_idle).sum(),
+    }
+}
+
 fn parse_squeue_jobs_output(stdout: &str) -> Result<Vec<SlurmJob>> {
     let mut jobs = Vec::new();
     for (index, raw_line) in stdout.lines().enumerate() {
@@ -534,6 +831,27 @@ fn run_process(program: String, args: &[String], timeout_secs: u64) -> Result<Ex
         .spawn()
         .with_context(|| format!("failed to spawn process: {} {:?}", program, args))?;
 
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stdout"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("failed to capture stderr"))?;
+    let stdout_handle = thread::spawn(move || -> Vec<u8> {
+        let mut reader = stdout;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+    let stderr_handle = thread::spawn(move || -> Vec<u8> {
+        let mut reader = stderr;
+        let mut buf = Vec::new();
+        let _ = reader.read_to_end(&mut buf);
+        buf
+    });
+
     let timeout = std::time::Duration::from_secs(timeout_secs.max(1));
     let status = child
         .wait_timeout(timeout)
@@ -542,20 +860,31 @@ fn run_process(program: String, args: &[String], timeout_secs: u64) -> Result<Ex
     if status.is_none() {
         child.kill().ok();
         let _ = child.wait();
+    }
+
+    let stdout = stdout_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("stdout reader thread panicked"))?;
+    let mut stderr = stderr_handle
+        .join()
+        .map_err(|_| anyhow::anyhow!("stderr reader thread panicked"))?;
+
+    if status.is_none() {
+        if !stderr.is_empty() {
+            stderr.extend_from_slice(b"\n");
+        }
+        stderr.extend_from_slice(b"Command timed out");
         return Ok(ExecRunData {
-            stdout: String::new(),
-            stderr: "Command timed out".to_string(),
+            stdout: String::from_utf8_lossy(&stdout).to_string(),
+            stderr: String::from_utf8_lossy(&stderr).to_string(),
             exit_code: 124,
         });
     }
 
-    let output = child
-        .wait_with_output()
-        .context("failed to collect process output")?;
     Ok(ExecRunData {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-        exit_code: output.status.code().unwrap_or(-1),
+        stdout: String::from_utf8_lossy(&stdout).to_string(),
+        stderr: String::from_utf8_lossy(&stderr).to_string(),
+        exit_code: status.and_then(|value| value.code()).unwrap_or(-1),
     })
 }
 
@@ -828,5 +1157,44 @@ mod tests {
     fn parse_squeue_jobs_output_rejects_bad_rows() {
         let err = parse_squeue_jobs_output("57373|gpu-a10|interactive").unwrap_err();
         assert!(err.to_string().contains("expected 8 fields"));
+    }
+
+    #[test]
+    fn parse_gpu_gres_supports_typed_and_simple_forms() {
+        assert_eq!(parse_gpu_gres("gpu:a100:4"), (4, "a100".to_string()));
+        assert_eq!(parse_gpu_gres("gpu:a40:2(S:0)"), (2, "a40".to_string()));
+        assert_eq!(parse_gpu_gres("gpu:8"), (8, "unknown".to_string()));
+        assert_eq!(parse_gpu_gres("cpu"), (0, String::new()));
+    }
+
+    #[test]
+    fn parse_scontrol_gpu_nodes_output_classifies_available_and_drain() {
+        let output = "\
+NodeName=gpu-a10-3 Arch=x86_64\n\
+   State=IDLE\n\
+   Gres=gpu:a10:2\n\
+   Partitions=gpu-a10\n\
+   CPUAlloc=16 CPUTot=32\n\
+   AllocTRES=cpu=16,gres/gpu=1\n\
+NodeName=gpu-a40-9 Arch=x86_64\n\
+   State=DRAIN\n\
+   Gres=gpu:a40:4\n\
+   Partitions=gpu-a40\n\
+   CPUAlloc=0 CPUTot=64\n\
+   AllocTRES=\n";
+        let nodes = parse_scontrol_gpu_nodes_output(output).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].gpu_idle, 1);
+        assert_eq!(nodes[0].cpu_idle, 16);
+        assert!(!nodes[0].is_drain);
+        assert!(nodes[1].is_drain);
+        assert_eq!(nodes[1].gpu_type, "A40");
+    }
+
+    #[test]
+    fn matches_token_uses_exact_partition_segments() {
+        assert!(matches_token("gpu-a10", "gpu-a10"));
+        assert!(matches_token("gpu-a10,gpu-share", "gpu-share"));
+        assert!(!matches_token("gpu-a100", "gpu-a10"));
     }
 }

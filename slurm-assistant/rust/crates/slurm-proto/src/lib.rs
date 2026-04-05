@@ -128,6 +128,51 @@ pub struct SlurmJobsRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmStatusGpuRequest {
+    pub connection_id: String,
+    pub partition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmFindGpuRequest {
+    pub connection_id: String,
+    pub gpu_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmGpuNode {
+    pub node: String,
+    pub partition: String,
+    pub gpu_idle: u32,
+    pub gpu_total: u32,
+    pub gpu_type: String,
+    pub cpu_idle: u32,
+    pub cpu_total: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmGpuSummary {
+    pub available_nodes: u32,
+    pub total_gpu: u32,
+    pub idle_gpu: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmStatusGpuData {
+    pub available_nodes: Vec<SlurmGpuNode>,
+    pub drain_nodes: Vec<SlurmGpuNode>,
+    pub summary: SlurmGpuSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmFindGpuData {
+    pub available_nodes: Vec<SlurmGpuNode>,
+    pub busy_nodes: Vec<SlurmGpuNode>,
+    pub drain_nodes: Vec<SlurmGpuNode>,
+    pub summary: SlurmGpuSummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SlurmJob {
     pub job_id: String,
     pub partition: String,
@@ -212,6 +257,41 @@ mod tests {
         };
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SlurmJobsRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn slurm_status_gpu_response_roundtrip() {
+        let value = SuccessResponse::new(SlurmStatusGpuData {
+            available_nodes: vec![SlurmGpuNode {
+                node: "gpu-a10-3".to_string(),
+                partition: "gpu-a10".to_string(),
+                gpu_idle: 1,
+                gpu_total: 2,
+                gpu_type: "A10".to_string(),
+                cpu_idle: 16,
+                cpu_total: 32,
+            }],
+            drain_nodes: vec![],
+            summary: SlurmGpuSummary {
+                available_nodes: 1,
+                total_gpu: 2,
+                idle_gpu: 1,
+            },
+        });
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SuccessResponse<SlurmStatusGpuData> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn slurm_find_gpu_request_roundtrip() {
+        let value = SlurmFindGpuRequest {
+            connection_id: "conn_gzu_cluster".to_string(),
+            gpu_type: Some("a10".to_string()),
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SlurmFindGpuRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 
