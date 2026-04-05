@@ -222,6 +222,20 @@
 - `log <不存在的 job>`
 - `exec -c hostname`
 
+当前已落地的脚本：
+
+- `slurm-assistant/rust/scripts/live_smoke_gzu.sh`
+
+该脚本会串行验证：
+
+- `jobs`
+- `status --gpu`
+- `find-gpu`
+- 缺失日志契约
+- `upload/download`
+- `submit`
+- `release`
+
 ### 验收标准
 
 - 所有关键命令都有 `--json`
@@ -284,4 +298,3 @@
 - 至少有一条本地 e2e 和一条远程 e2e
 - skill 有独立 compliance eval
 - 真实贵州大学集群有最小回归用例
-
