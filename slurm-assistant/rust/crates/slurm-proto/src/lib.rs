@@ -202,6 +202,17 @@ pub struct SlurmLogData {
     pub content: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmCancelRequest {
+    pub connection_id: String,
+    pub job_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SlurmCancelData {
+    pub cancelled: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +328,17 @@ mod tests {
         });
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SuccessResponse<SlurmLogData> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn slurm_cancel_request_roundtrip() {
+        let value = SlurmCancelRequest {
+            connection_id: "conn_gzu_cluster".to_string(),
+            job_ids: vec!["60001".to_string(), "60002".to_string()],
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SlurmCancelRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 

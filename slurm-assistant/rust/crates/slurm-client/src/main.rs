@@ -9,9 +9,9 @@ use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use slurm_proto::{
     ConnectionAddRequest, ConnectionKind, ConnectionListData, ExecRunData, ExecRunRequest,
-    RuntimeFile, ServerStatusData, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode,
-    SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
-    SlurmStatusGpuRequest, SuccessResponse,
+    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
+    SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
+    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
@@ -23,6 +23,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Cancel(CancelCommand),
     Connection(ConnectionCommand),
     Exec(ExecCommand),
     FindGpu(FindGpuCommand),
@@ -30,6 +31,15 @@ enum Command {
     Log(LogCommand),
     Status(StatusCommand),
     Server(ServerCommand),
+}
+
+#[derive(Debug, Args)]
+struct CancelCommand {
+    job_ids: Vec<String>,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -150,6 +160,24 @@ impl From<ConnectionKindArg> for ConnectionKind {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Cancel(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = cancel_query(
+                &runtime,
+                &SlurmCancelRequest {
+                    connection_id: cmd.connection_id,
+                    job_ids: cmd.job_ids,
+                },
+            )?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                println!("Cancelled {} job(s)", payload.data.cancelled.len());
+                for job_id in payload.data.cancelled {
+                    println!("  {}", job_id);
+                }
+            }
+        }
         Command::Connection(cmd) => {
             let runtime = read_runtime_file(&runtime_file_path()?)?;
             match cmd.command {
@@ -417,6 +445,19 @@ fn log_query(
             .json(request),
         runtime,
         "failed to decode log response",
+    )
+}
+
+fn cancel_query(
+    runtime: &RuntimeFile,
+    request: &SlurmCancelRequest,
+) -> Result<SuccessResponse<SlurmCancelData>> {
+    send_request_json(
+        http_client()
+            .post(format!("http://{}:{}/v1/slurm/cancel", runtime.host, runtime.port))
+            .json(request),
+        runtime,
+        "failed to decode cancel response",
     )
 }
 
