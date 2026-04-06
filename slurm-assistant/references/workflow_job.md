@@ -31,13 +31,15 @@
 
 ## 第二步：询问虚拟环境配置（必须）
 
-这是关键步骤！必须询问用户需要使用哪种虚拟环境：
+这是关键步骤。这里讨论的是“用户作业脚本如何运行自己的 Python 环境”，不是 `slurm-assistant` 自身的运行时依赖。
+
+必须询问用户需要使用哪种虚拟环境：
 
 ```json
 {
   "questions": [
     {
-      "question": "请选择 Python 环境管理方式",
+      "question": "请选择用户作业的 Python 环境管理方式",
       "options": [
         "uv（推荐，快速现代）",
         "conda（传统方式）",
@@ -53,20 +55,25 @@
 
 ## 第三步：根据回答生成激活语句
 
-根据用户选择，在作业脚本中添加相应的激活语句：
+根据用户选择，在用户的作业脚本中添加相应的激活语句：
 
 | 用户选择 | 激活语句 |
 |---------|---------|
-| **uv（推荐）** | `# 使用 uv run，无需激活<br>uv run python your_script.py` |
+| **uv（推荐）** | `# 用户脚本通过 uv 运行，无需激活<br>uv run python your_script.py` |
 | **conda** | `source ~/.bashrc<br>conda activate your_env_name` |
-| **conda + uv** | `# 先激活 conda（获取 CUDA）<br>source ~/.bashrc<br>conda activate base<br># 使用 uv 运行（获取 Python 包）<br>uv run python your_script.py` |
-| **不需要** | `# 使用系统 Python<br>module load python/3.9<br>python your_script.py` |
+| **conda + uv** | `# 先激活 conda（获取 CUDA）<br>source ~/.bashrc<br>conda activate base<br># 用户脚本通过 uv 运行<br>uv run python your_script.py` |
+| **不需要** | `# 用户脚本直接使用系统 Python<br>module load python/3.9<br>python your_script.py` |
 
 ---
 
 ## 第四步：生成完整脚本
 
 结合收集的信息，生成完整的作业脚本。
+
+注意：
+
+- `submit`、`jobs`、`log` 这些集群操作由 Rust `slurm-client` 负责
+- 脚本里的 `python` / `uv run python` 只是用户真正的训练、推理或数据处理命令
 
 ### 示例：用户选择 uv + GPU
 
@@ -149,7 +156,7 @@ echo "Job completed at: $(date)"
 如果用户选择立即提交，执行：
 
 ```bash
-uv run python "$SCRIPT" submit script.sh
+cargo run --quiet --bin slurm-client -- submit --connection <connection_id> script.sh
 ```
 
 ---

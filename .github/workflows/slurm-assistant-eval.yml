@@ -2,45 +2,52 @@ name: slurm-assistant-eval
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'slurm-assistant/SKILL.md'
-      - 'slurm-assistant/references/**'
-      - 'slurm-assistant/scripts/slurm-cli.py'
-      - 'slurm-assistant/evals/**'
-      - '.github/workflows/slurm-assistant-eval.yml'
 
 jobs:
-  trace-structure:
+  eval-assets:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Validate eval files
+      - name: Validate eval case file
         run: |
-          python - <<'PY'
-          import json, pathlib
-          p = pathlib.Path('slurm-assistant/evals/cases.json')
-          data = json.loads(p.read_text(encoding='utf-8'))
-          assert isinstance(data, list) and data, 'cases.json must be a non-empty list'
-          print(f'loaded {len(data)} cases')
-          PY
+          jq -e 'type == "array" and length > 0' slurm-assistant/evals/cases.json >/dev/null
+      - name: Ensure eval driver is executable
+        run: test -x slurm-assistant/evals/run_eval.sh
+      - name: Ensure live smoke script is executable
+        run: test -x slurm-assistant/rust/scripts/live_smoke_gzu.sh
+      - name: Smoke trace evaluator
+        run: |
+          tmp_trace="$(mktemp)"
+          cat > "${tmp_trace}" <<'EOF'
+          {
+            "tool_calls": [
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- server status --json"}},
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- connection list --json"}},
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- status --connection conn_gzu_cluster --gpu --json"}},
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- find-gpu a10 --connection conn_gzu_cluster --json"}},
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- jobs --connection conn_gzu_cluster --json"}},
+              {"tool": "functions.exec_command", "parameters": {"cmd": "cargo run --quiet --bin slurm-client -- log 999999999 --connection conn_gzu_cluster --json"}}
+            ]
+          }
+          EOF
+          bash slurm-assistant/evals/run_eval.sh trace --trace "${tmp_trace}" >/dev/null
 
   live-cluster:
     if: ${{ secrets.GZU_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.GZU_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-      - name: Run live eval
+      - name: Run live smoke
+        env:
+          SLURM_ASSISTANT_GZU_HOST: 210.40.56.85
+          SLURM_ASSISTANT_GZU_PORT: 21563
+          SLURM_ASSISTANT_GZU_USER: qiandingh
         run: |
-          python slurm-assistant/evals/run_live_eval.py live
+          bash slurm-assistant/rust/scripts/live_smoke_gzu.sh

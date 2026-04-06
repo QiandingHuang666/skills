@@ -6,101 +6,61 @@
 
 ## 前置检查
 
-### 1. 确认文件路径
+### 上传前
 
-执行任何传输操作前，必须先确认文件路径是否正确。
-
-**上传前检查：**
 ```bash
-# 本地文件检查
 ls -lh <本地路径>
 ```
 
-**下载前检查：**
+### 下载前
+
 ```bash
-# 远程文件检查
-uv run python "$SCRIPT" exec -c "ls -lh <远程路径>"
+cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "ls -lh <远程路径>" --json
 ```
 
-如果文件/目录不存在，必须使用 `AskUserQuestion` 询问用户：
-
-```json
-{
-  "questions": [
-    {
-      "question": "文件 <路径> 不存在，是否继续？",
-      "options": ["继续操作", "取消操作"]
-    }
-  ]
-}
-```
+如果路径不存在，不要盲传；先让用户确认路径是否写错。
 
 ---
 
 ## 默认路径规则
 
-### 上传 (upload)
+### 上传
 
 | 用户指定 | 默认行为 |
 |---------|---------|
-| 只指定源文件 | 目标路径 = `~/` (家目录) |
-| 指定源和目标 | 使用用户指定的路径 |
-| 相对路径 | 相对于 `~/` 目录 |
-| 当前目录 | 使用 `.` 表示 |
+| 只给源文件名 | 目标补全为 `~/<文件名>` |
+| 指定源和目标 | 使用用户指定路径 |
+| 源是目录 | 自动加 `-r` |
 
-**示例：**
+示例：
+
 ```bash
-# 用户说"上传 train.py"
-# AI 应该执行：
-uv run python "$SCRIPT" upload train.py ~/
-
-# 用户说"上传 data/ 到 /workspace/datasets"
-# AI 应该执行：
-uv run python "$SCRIPT" upload data/ /workspace/datasets -r
+cargo run --quiet --bin slurm-client -- upload train.py ~/train.py --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- upload data/ ~/data --connection <connection_id> -r --json
 ```
 
-### 下载 (download)
+### 下载
 
 | 用户指定 | 默认行为 |
 |---------|---------|
-| 只指定远程文件 | 本地路径 = `~/` (家目录) |
-| 指定远程和本地 | 使用用户指定的路径 |
-| 相对路径 | 相对于 `~/` 目录 |
-| 当前目录 | 使用 `.` 表示 |
+| 只给远程文件名 | 本地补全为 `./<文件名>` 或用户当前工作目录 |
+| 指定远程和本地 | 使用用户指定路径 |
+| 远程是目录 | 自动加 `-r` |
 
-**示例：**
+示例：
+
 ```bash
-# 用户说"下载 slurm-12345.out"
-# AI 应该执行：
-uv run python "$SCRIPT" download slurm-12345.out ~/
-
-# 用户说"下载 /workspace/models/checkpoint.pth 到 ./checkpoints/"
-# AI 应该执行：
-uv run python "$SCRIPT" download /workspace/models/checkpoint.pth ./checkpoints/
+cargo run --quiet --bin slurm-client -- download ~/slurm-12345.out ./slurm-12345.out --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- download ~/checkpoints ./checkpoints --connection <connection_id> -r --json
 ```
 
 ---
 
 ## 传输前确认
 
-### 大文件警告
-
-文件大于 1GB 时，必须询问用户确认：
-
-```json
-{
-  "questions": [
-    {
-      "question": "文件较大（约 2.5GB），传输可能需要较长时间。是否继续？",
-      "options": ["继续传输", "取消"]
-    }
-  ]
-}
-```
-
-### 目录传输
-
-传输目录时必须使用 `-r` 参数。如果用户未指定，AI 应自动添加。
+- 文件超过 1GB 时，先提醒用户耗时和网络成本
+- 目录传输时自动补 `-r`
+- 远程路径涉及覆盖已有结果时，先说明
 
 ---
 
@@ -108,18 +68,14 @@ uv run python "$SCRIPT" download /workspace/models/checkpoint.pth ./checkpoints/
 
 ### 上传验证
 
-上传完成后，验证文件是否存在：
-
 ```bash
-uv run python "$SCRIPT" exec -c "ls -lh <目标路径>"
+cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "ls -lh <远程目标路径>" --json
 ```
 
 ### 下载验证
 
-下载完成后，验证本地文件：
-
 ```bash
-ls -lh <本地路径>
+ls -lh <本地目标路径>
 ```
 
 ---
@@ -128,34 +84,25 @@ ls -lh <本地路径>
 
 ### 场景 1：上传训练脚本
 
-用户："上传我的训练脚本"
-
-AI 流程：
 1. 检查本地文件：`ls -lh train.py`
-2. 确认存在后上传：`uv run python "$SCRIPT" upload train.py ~/`
-3. 验证：`uv run python "$SCRIPT" exec -c "ls -lh ~/train.py"`
+2. 上传：`cargo run --quiet --bin slurm-client -- upload train.py ~/train.py --connection <connection_id> --json`
+3. 验证：`cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "ls -lh ~/train.py" --json`
 
 ### 场景 2：下载作业输出
 
-用户："下载今天的作业输出"
+1. 搜索日志：`cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "ls -lt ~/slurm-*.out | head" --json`
+2. 下载：`cargo run --quiet --bin slurm-client -- download ~/slurm-12345.out ./slurm-12345.out --connection <connection_id> --json`
+3. 验证：`ls -lh ./slurm-12345.out`
 
-AI 流程：
-1. 询问具体文件名或搜索：`uv run python "$SCRIPT" exec -c "ls -lt ~/slurm-*.out | head"`
-2. 确认文件后下载：`uv run python "$SCRIPT" download slurm-12345.out ~/`
-3. 验证：`ls -lh ~/slurm-12345.out`
+### 场景 3：上传目录
 
-### 场景 3：上传数据集目录
-
-用户："上传 imagenet 数据集"
-
-AI 流程：
 1. 检查本地目录：`ls -lh imagenet/`
-2. 检查大小，如果很大（>1GB）警告用户
-3. 上传：`uv run python "$SCRIPT" upload imagenet/ ~/imagenet -r`
-4. 验证：`uv run python "$SCRIPT" exec -c "ls -lh ~/imagenet/"`
+2. 如体积很大先提醒
+3. 上传：`cargo run --quiet --bin slurm-client -- upload imagenet/ ~/imagenet --connection <connection_id> -r --json`
+4. 验证：`cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "ls -lh ~/imagenet | head" --json`
 
 ---
 
 ## 相关文档
 
-- `references/commands.md` - upload/download 命令详细用法
+- `references/commands.md`

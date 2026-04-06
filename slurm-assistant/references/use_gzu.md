@@ -46,7 +46,17 @@
 }
 ```
 
-**注意**：这是唯一的 slurm-cli.py 命令调用,不需要其他 shell 命令！
+连接创建时直接使用 Rust client：
+
+```bash
+cargo run --quiet --bin slurm-client -- connection add \
+  --label gzu-cluster \
+  --host 210.40.56.85 \
+  --port 21563 \
+  --user "<用户名>" \
+  --kind cluster \
+  --json
+```
 
 ---
 

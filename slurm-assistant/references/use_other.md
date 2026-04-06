@@ -73,12 +73,14 @@
 ### 4. 保存配置
 
 ```bash
-uv run python "$SCRIPT" init --mode remote \
-  --cluster-name "用户输入的名称" \
+cargo run --quiet --bin slurm-client -- connection add \
+  --label "用户输入的名称" \
   --host "用户输入的地址" \
   --port 用户输入的端口 \
-  --username "用户输入的用户名" \
-  --jump-host "跳板机地址（如有）"
+  --user "用户输入的用户名" \
+  --kind cluster \
+  --jump-host "跳板机地址（如有）" \
+  --json
 ```
 
 ---

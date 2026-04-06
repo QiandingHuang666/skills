@@ -1,32 +1,20 @@
 # server + client + skill 架构设计 v0
 
-本设计用于把当前单体 `slurm-cli.py` 演进为：
-
-- `slurm-server`：Rust 常驻服务
-- `slurm-client`：Rust CLI 二进制
-- `SKILL.md`：agent 调用 `slurm-client` 的指引
+这是当前 `slurm-assistant` 的 Rust 主架构说明，不再以 `slurm-cli.py` 为主入口。
 
 配套图见：`references/architecture-v0.excalidraw`
 
 ---
 
-## 1. 目标
+## 1. 当前状态
 
-### 目标
+仓库主链路已经统一为：
 
-- 把 SSH、会话、缓存、持久化从 skill 和 CLI 中剥离出来
-- 让 agent 只调用稳定的 client 接口
-- 支持本地模式和远程模式
-- 支持同一用户在不同节点上分别运行本机 server
-- 以测试驱动为主线，避免再次演化成单体脚本
+- `slurm-server`：本机常驻服务
+- `slurm-client`：给 agent 和终端调用的稳定 CLI
+- `SKILL.md`：约束模型如何选择命令、如何做安全分流、如何组织输出
 
-### 非目标
-
-- 不做跨节点 server 路由
-- 不做 live session 迁移
-- 不做分布式协调
-- 第一版不做持久 shell 上下文
-- 第一版不做 Rust 原生 SSH 协议栈
+Python 单体 CLI 已退出主架构，不再作为默认能力面。
 
 ---
 
@@ -34,73 +22,75 @@
 
 ### Principle 1：client 只连接本机 server
 
-无论本地模式还是远程模式，规则统一为：
+统一规则：
 
-> client 发起的请求只由“与 client 同主机”的 server 处理。
+> client 发起的请求只由与 client 同主机的 server 处理。
 
-这意味着：
+这同时覆盖：
 
-- 登录节点上的 client 只连登录节点上的 server
-- 计算节点上的 client 只连计算节点上的 server
-- Windows/macOS/Linux 本机上的 client 只连本机上的 server
+- Windows PC
+- macOS / Linux 本机
+- 集群登录节点
+- 集群计算节点
 
-### Principle 2：live state 只存在于本机 server
+### Principle 2：live state 只保存在本机
 
 live state 包括：
 
-- 本地执行上下文
-- SSH 控制连接
-- 运行中的子进程
-- 实时流式输出
+- 本机 runtime 文件
+- 本机 server 进程
+- SSH / SCP 子进程
+- 正在执行的命令
 
 这些状态不跨节点共享。
 
 ### Principle 3：共享的是持久化数据，不是活连接
 
-在集群本地模式下，多个节点都可能读写用户 home 目录，因此共享层只包含：
+在多节点场景下，共享层只保留持久化状态：
 
-- connection 配置
-- session 摘要
-- job history
-- resource cache
+- 连接配置
+- 历史记录
+- 资源缓存
 
-持久化采用 SQLite，解决并发读写。
+持久化采用 SQLite，并启用 WAL / busy timeout 以适应并发读写。
 
-### Principle 4：高层语义命令优先
+### Principle 4：高层命令优先
 
-agent 优先通过 client 调用高层命令：
+agent 默认优先使用：
 
+- `server status`
+- `connection list`
 - `status --gpu`
 - `find-gpu`
+- `partition-info`
 - `jobs`
 - `log`
 - `submit`
 - `cancel`
 
-只有在现有高层命令无法覆盖时，才调用 `exec`。
+只有在高层语义不够时才使用 `exec`。
 
 ---
 
-## 3. 分层结构
+## 3. 分层职责
 
 ## Skill
 
 职责：
 
-- 定义最小决策树
-- 定义安全边界
-- 指导 agent 选择 `slurm-client` 命令
+- 给模型提供最小决策树
+- 约束安全边界
+- 规定输出格式
 
 不负责：
 
 - 直接 SSH
-- 直接访问数据库
-- 直接管理会话
-- 处理 IPC 细节
+- 直接读写数据库
+- 管理 IPC
 
 ## Client
 
-建议二进制名：
+二进制名：
 
 ```text
 slurm-client
@@ -110,19 +100,13 @@ slurm-client
 
 - 参数解析
 - 发现本机 server
-- 发起 RPC 请求
+- 发起 HTTP RPC
 - 输出文本或 JSON
-- 提供稳定退出码
-
-不负责：
-
-- 自己拼 SSH
-- 自己写主状态数据库
-- 自己持有 live session
+- 给 agent 一个稳定的调用面
 
 ## Server
 
-建议二进制名：
+二进制名：
 
 ```text
 slurm-server
@@ -131,77 +115,40 @@ slurm-server
 职责：
 
 - 本机常驻服务
-- 管理本机会话
-- 本地执行和远程 SSH 执行
-- 持久化状态
-- 暴露 RPC 接口
-- 聚合 Slurm 高层服务
+- 管理 runtime / token / sqlite
+- 执行本地命令或远程 SSH / SCP
+- 暴露 `/v1/...` API
 
 ---
 
-## 4. IPC 设计
+## 4. IPC
 
-### 第一版方案
-
-为了兼容 Windows/macOS/Linux，第一版统一采用：
+当前默认 transport：
 
 - `localhost TCP`
-- token 鉴权
+- bearer token 鉴权
 
-具体为：
+原因：
 
-- server 监听 `127.0.0.1:<port>`
-- 启动时生成随机 token
-- 写入 runtime 文件供 client 发现
+- 能覆盖 Windows
+- 实现简单，利于 skill 和 client 保持统一
 
-### 运行时文件
+runtime 文件：
 
-Linux/macOS:
-
-```text
-~/.local/share/slurm-assistant/runtime.json
-```
-
-Windows:
-
-```text
-%APPDATA%/slurm-assistant/runtime.json
-```
-
-示例：
-
-```json
-{
-  "version": 1,
-  "transport": "tcp",
-  "host": "127.0.0.1",
-  "port": 47831,
-  "token": "random-secret",
-  "pid": 12345,
-  "started_at": "2026-04-05T12:34:56Z"
-}
-```
-
-### 后续优化
-
-后续可按平台替换 transport：
-
-- Linux/macOS：Unix socket
-- Windows：Named Pipe
-
-但不影响 client/server 协议。
+- Linux/macOS：`~/.local/share/slurm-assistant/runtime.json`
+- Windows：`%APPDATA%/slurm-assistant/runtime.json`
 
 ---
 
-## 5. 持久化设计
+## 5. 持久化
 
-数据库建议：
+数据库：
 
 ```text
 ~/.local/share/slurm-assistant/state.db
 ```
 
-第一版使用 SQLite，并启用：
+SQLite 配置：
 
 ```sql
 PRAGMA journal_mode=WAL;
@@ -209,176 +156,43 @@ PRAGMA synchronous=NORMAL;
 PRAGMA busy_timeout=5000;
 ```
 
-### 为什么不用 JSON
+---
 
-- 多节点并发写入容易损坏
-- 难以做事务
-- 难以做索引与查询
+## 6. 执行模型
 
-SQLite 更适合：
+### 本地模式
 
-- 连接配置
-- 历史记录
-- cache
-- session 摘要
+- client 请求同机 server
+- server 直接调用本机 `squeue`、`sbatch`、`scontrol`
+
+### 远程模式
+
+- client 请求同机 server
+- server 调用系统 `ssh` / `scp`
+- 不在 client 层拼接远程执行细节
 
 ---
 
-## 6. Session 模型
+## 7. 测试驱动
 
-第一版只做两种 session：
+当前测试分三层：
 
-### `local_exec`
+- Rust 单元测试：覆盖 proto、client、server
+- live smoke：真实连贵州大学集群做端到端验证
+- trace eval：检查模型工具轨迹是否遵循 skill 规定
 
-用于本地模式，在当前节点直接执行命令。
+评测主链路也应遵循同样原则：
 
-### `ssh_control`
-
-用于远程模式，通过系统 `ssh` 建立和复用远程会话。
-
-### 第一版不做
-
-- 持久 shell 上下文
-- 跨请求共享 `cd`
-- `conda activate` 后上下文保持
-- 复杂交互 shell channel
-
-这些可在第二版引入 `shell` session。
+- 不再依赖 Python wrapper
+- 优先测试 Rust client 返回结果及其解析
 
 ---
 
-## 7. SSH 实现策略
+## 8. 后续方向
 
-第一版 server 不自己实现 SSH 协议，而是调用系统：
+后续可以继续补充：
 
-- `ssh`
-- `scp`
-
-原因：
-
-- 对 HPC 环境兼容性更好
-- 对跳板机、用户现有 `~/.ssh/config` 兼容更好
-- 跨平台风险更低
-
-server 需要封装自己的 transport 层，而不是让 client 直接调 shell。
-
----
-
-## 8. 推荐 Rust 工程结构
-
-```text
-slurm-assistant/
-  rust/
-    Cargo.toml
-    crates/
-      slurm-proto/
-      slurm-server/
-      slurm-client/
-```
-
-### `slurm-proto`
-
-共享：
-
-- request / response structs
-- error codes
-- connection / session / job models
-
-### `slurm-server`
-
-负责：
-
-- runtime file
-- token auth
-- IPC server
-- sqlite store
-- session manager
-- openssh transport
-- slurm services
-
-### `slurm-client`
-
-负责：
-
-- CLI 参数解析
-- runtime 发现
-- rpc 调用
-- 文本和 JSON 输出
-
----
-
-## 9. 新旧体系迁移关系
-
-当前：
-
-- `scripts/slurm-cli.py` 是主入口
-
-目标：
-
-- `slurm-client` 成为主入口
-- `slurm-cli.py` 迁移到 `compat/`，作为兼容壳存在
-
-迁移策略：
-
-1. 新 server/client 先落最小闭环
-2. 读操作优先迁移
-3. 写操作随后迁移
-4. skill 改为调用 client
-5. compat 层再逐步接管旧命令
-
----
-
-## 10. Skill 层改造方向
-
-skill 不再围绕 `slurm-cli.py` 展开，而应围绕：
-
-- `slurm-client server status`
-- `slurm-client connection list`
-- `slurm-client status --gpu`
-- `slurm-client jobs`
-- `slurm-client exec -c ...`
-
-最小决策树应改写为：
-
-1. 检查本机 server 是否在线
-2. 检查 connection 是否已配置
-3. 优先高层命令
-4. 必要时使用 `exec`
-
----
-
-## 11. 第一版交付边界
-
-### 必做
-
-- Rust workspace
-- `slurm-server`
-- `slurm-client`
-- localhost TCP + token
-- SQLite store
-- connection add/list
-- `exec`
-- `jobs`
-- `status --gpu`
-- 测试驱动
-
-### 暂缓
-
-- Unix socket / Named Pipe
-- shell 持久上下文
-- server 间协调
-- session 漂移
-- Web UI
-
----
-
-## 12. 成功标准
-
-满足以下条件时，可认为 v0 架构落地成功：
-
-- client 能稳定发现并调用本机 server
-- server 能稳定持有本机会话和数据库
-- 新 client 能覆盖当前高频读路径
-- skill 能主要围绕 client 指引
-- live eval 与 skill eval 能接入新体系
-
+- 更正式的 trace eval 报告格式
+- 更多 server API
+- Windows 侧运行手册
+- 对 `partition-info / node-info / node-jobs` 的更细粒度验证

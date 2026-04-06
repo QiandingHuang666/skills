@@ -3,22 +3,25 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::Serialize;
 use slurm_proto::{
-    ConnectionAddRequest, ConnectionDeleteData, ConnectionKind, ConnectionListData, ConnectionRecord,
-    ExecRunData, ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest,
-    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
-    SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest, SlurmLogData,
-    SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    ConnectionAddRequest, ConnectionDeleteData, ConnectionKind, ConnectionListData,
+    ConnectionRecord, ExecRunData, ExecRunRequest, FileDownloadRequest, FileTransferData,
+    FileUploadRequest, RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest,
+    SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest,
+    SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
     SlurmSubmitRequest, SuccessResponse,
 };
 
 #[derive(Debug, Parser)]
-#[command(name = "slurm-client", about = "Rust client scaffold for slurm-assistant")]
+#[command(
+    name = "slurm-client",
+    about = "Rust client scaffold for slurm-assistant"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -456,14 +459,24 @@ fn main() -> Result<()> {
                         println!("Connections");
                         for conn in payload.data.connections {
                             let endpoint = match (&conn.host, conn.port, &conn.username) {
-                                (Some(host), Some(port), Some(user)) => format!("{user}@{host}:{port}"),
+                                (Some(host), Some(port), Some(user)) => {
+                                    format!("{user}@{host}:{port}")
+                                }
                                 _ => "local".to_string(),
                             };
-                            println!("  {} [{}] {}", conn.label, format!("{:?}", conn.kind).to_lowercase(), endpoint);
+                            println!(
+                                "  {} [{}] {}",
+                                conn.label,
+                                format!("{:?}", conn.kind).to_lowercase(),
+                                endpoint
+                            );
                         }
                     }
                 }
-                ConnectionSubcommand::Get { connection_id, json } => {
+                ConnectionSubcommand::Get {
+                    connection_id,
+                    json,
+                } => {
                     let payload = get_connection(&runtime, &connection_id)?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -471,7 +484,10 @@ fn main() -> Result<()> {
                         print_connection_detail(&payload.data);
                     }
                 }
-                ConnectionSubcommand::Remove { connection_id, json } => {
+                ConnectionSubcommand::Remove {
+                    connection_id,
+                    json,
+                } => {
                     let payload = remove_connection(&runtime, &connection_id)?;
                     if json {
                         println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -537,8 +553,8 @@ fn main() -> Result<()> {
                 println!("No jobs found");
             } else {
                 println!(
-                    "{:<12} {:<12} {:<20} {:<12} {:<12} {:<12} {:<6} {}",
-                    "JOBID", "PARTITION", "NAME", "USER", "STATE", "TIME", "NODES", "REASON"
+                    "{:<12} {:<12} {:<20} {:<12} {:<12} {:<12} {:<6} REASON",
+                    "JOBID", "PARTITION", "NAME", "USER", "STATE", "TIME", "NODES"
                 );
                 for job in payload.data.jobs {
                     println!(
@@ -598,7 +614,8 @@ fn main() -> Result<()> {
         }
         Command::PartitionInfo(cmd) => {
             let runtime = read_runtime_file(&runtime_file_path()?)?;
-            let payload = partition_info_query(&runtime, &cmd.connection_id, cmd.partition.as_deref())?;
+            let payload =
+                partition_info_query(&runtime, &cmd.connection_id, cmd.partition.as_deref())?;
             if cmd.json {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
             } else {
@@ -745,10 +762,14 @@ fn runtime_file_path() -> Result<PathBuf> {
     }
     if cfg!(windows) {
         let base = env::var("APPDATA").context("APPDATA not set")?;
-        return Ok(PathBuf::from(base).join("slurm-assistant").join("runtime.json"));
+        return Ok(PathBuf::from(base)
+            .join("slurm-assistant")
+            .join("runtime.json"));
     }
     if let Ok(xdg_state) = env::var("XDG_STATE_HOME") {
-        return Ok(PathBuf::from(xdg_state).join("slurm-assistant").join("runtime.json"));
+        return Ok(PathBuf::from(xdg_state)
+            .join("slurm-assistant")
+            .join("runtime.json"));
     }
     let home = env::var("HOME").context("HOME not set")?;
     Ok(PathBuf::from(home)
@@ -759,7 +780,8 @@ fn runtime_file_path() -> Result<PathBuf> {
 }
 
 fn read_runtime_file(path: &Path) -> Result<RuntimeFile> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read runtime file {}", path.display()))?;
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read runtime file {}", path.display()))?;
     let runtime = serde_json::from_slice::<RuntimeFile>(&bytes)
         .with_context(|| format!("failed to parse runtime file {}", path.display()))?;
     Ok(runtime)
@@ -767,8 +789,10 @@ fn read_runtime_file(path: &Path) -> Result<RuntimeFile> {
 
 fn fetch_server_status(runtime: &RuntimeFile) -> Result<SuccessResponse<ServerStatusData>> {
     send_request_json(
-        http_client()
-            .get(format!("http://{}:{}/v1/server/status", runtime.host, runtime.port)),
+        http_client().get(format!(
+            "http://{}:{}/v1/server/status",
+            runtime.host, runtime.port
+        )),
         runtime,
         "failed to decode server status response",
     )
@@ -780,7 +804,10 @@ fn add_connection(
 ) -> Result<SuccessResponse<slurm_proto::ConnectionAddData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/connections/add", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/connections/add",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode connection add response",
@@ -789,20 +816,24 @@ fn add_connection(
 
 fn list_connections(runtime: &RuntimeFile) -> Result<SuccessResponse<ConnectionListData>> {
     send_request_json(
-        http_client()
-            .get(format!("http://{}:{}/v1/connections/list", runtime.host, runtime.port)),
+        http_client().get(format!(
+            "http://{}:{}/v1/connections/list",
+            runtime.host, runtime.port
+        )),
         runtime,
         "failed to decode connection list response",
     )
 }
 
-fn get_connection(runtime: &RuntimeFile, connection_id: &str) -> Result<SuccessResponse<ConnectionRecord>> {
+fn get_connection(
+    runtime: &RuntimeFile,
+    connection_id: &str,
+) -> Result<SuccessResponse<ConnectionRecord>> {
     send_request_json(
-        http_client()
-            .get(format!(
-                "http://{}:{}/v1/connections/{}",
-                runtime.host, runtime.port, connection_id
-            )),
+        http_client().get(format!(
+            "http://{}:{}/v1/connections/{}",
+            runtime.host, runtime.port, connection_id
+        )),
         runtime,
         "failed to decode connection get response",
     )
@@ -813,20 +844,25 @@ fn remove_connection(
     connection_id: &str,
 ) -> Result<SuccessResponse<ConnectionDeleteData>> {
     send_request_json(
-        http_client()
-            .delete(format!(
-                "http://{}:{}/v1/connections/{}",
-                runtime.host, runtime.port, connection_id
-            )),
+        http_client().delete(format!(
+            "http://{}:{}/v1/connections/{}",
+            runtime.host, runtime.port, connection_id
+        )),
         runtime,
         "failed to decode connection remove response",
     )
 }
 
-fn exec_run(runtime: &RuntimeFile, request: &ExecRunRequest) -> Result<SuccessResponse<ExecRunData>> {
+fn exec_run(
+    runtime: &RuntimeFile,
+    request: &ExecRunRequest,
+) -> Result<SuccessResponse<ExecRunData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/exec/run", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/exec/run",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode exec response",
@@ -839,7 +875,10 @@ fn jobs_query(
 ) -> Result<SuccessResponse<SlurmJobsData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/jobs", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/jobs",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode jobs response",
@@ -852,7 +891,10 @@ fn log_query(
 ) -> Result<SuccessResponse<SlurmLogData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/log", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/log",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode log response",
@@ -865,7 +907,10 @@ fn cancel_query(
 ) -> Result<SuccessResponse<SlurmCancelData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/cancel", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/cancel",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode cancel response",
@@ -878,7 +923,10 @@ fn submit_query(
 ) -> Result<SuccessResponse<SlurmSubmitData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/submit", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/submit",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode submit response",
@@ -891,7 +939,10 @@ fn upload_query(
 ) -> Result<SuccessResponse<FileTransferData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/files/upload", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/files/upload",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode upload response",
@@ -904,7 +955,10 @@ fn download_query(
 ) -> Result<SuccessResponse<FileTransferData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/files/download", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/files/download",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode download response",
@@ -917,7 +971,10 @@ fn status_gpu_query(
 ) -> Result<SuccessResponse<SlurmStatusGpuData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/status_gpu", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/status_gpu",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode status gpu response",
@@ -930,7 +987,10 @@ fn find_gpu_query(
 ) -> Result<SuccessResponse<SlurmFindGpuData>> {
     send_request_json(
         http_client()
-            .post(format!("http://{}:{}/v1/slurm/find_gpu", runtime.host, runtime.port))
+            .post(format!(
+                "http://{}:{}/v1/slurm/find_gpu",
+                runtime.host, runtime.port
+            ))
             .json(request),
         runtime,
         "failed to decode find gpu response",
@@ -965,7 +1025,10 @@ fn node_jobs_query(runtime: &RuntimeFile, connection_id: &str, node: &str) -> Re
         },
     )?;
     if running.data.exit_code != 0 {
-        bail!("node-jobs running query failed: {}", running.data.stderr.trim());
+        bail!(
+            "node-jobs running query failed: {}",
+            running.data.stderr.trim()
+        );
     }
 
     let pending = exec_run(
@@ -977,7 +1040,10 @@ fn node_jobs_query(runtime: &RuntimeFile, connection_id: &str, node: &str) -> Re
         },
     )?;
     if pending.data.exit_code != 0 {
-        bail!("node-jobs pending query failed: {}", pending.data.stderr.trim());
+        bail!(
+            "node-jobs pending query failed: {}",
+            pending.data.stderr.trim()
+        );
     }
 
     let node_partitions = exec_run(
@@ -989,7 +1055,10 @@ fn node_jobs_query(runtime: &RuntimeFile, connection_id: &str, node: &str) -> Re
         },
     )?;
     if node_partitions.data.exit_code != 0 {
-        bail!("node-jobs partition query failed: {}", node_partitions.data.stderr.trim());
+        bail!(
+            "node-jobs partition query failed: {}",
+            node_partitions.data.stderr.trim()
+        );
     }
 
     Ok(NodeJobsData {
@@ -1025,7 +1094,10 @@ fn partition_info_query(
         },
     )?;
     if nodes.data.exit_code != 0 {
-        bail!("partition-info node query failed: {}", nodes.data.stderr.trim());
+        bail!(
+            "partition-info node query failed: {}",
+            nodes.data.stderr.trim()
+        );
     }
 
     let jobs = exec_run(
@@ -1037,15 +1109,17 @@ fn partition_info_query(
         },
     )?;
     if jobs.data.exit_code != 0 {
-        bail!("partition-info jobs query failed: {}", jobs.data.stderr.trim());
+        bail!(
+            "partition-info jobs query failed: {}",
+            jobs.data.stderr.trim()
+        );
     }
 
     parse_partition_info(&nodes.data.stdout, &jobs.data.stdout, partition)
 }
 
 fn http_client() -> Client {
-    let client = Client::new();
-    client
+    Client::new()
 }
 
 fn truncate_for_table(value: &str, width: usize) -> String {
@@ -1092,7 +1166,8 @@ fn print_status_gpu_text(data: &SlurmStatusGpuData) {
 }
 
 fn print_find_gpu_text(data: &SlurmFindGpuData) {
-    if data.available_nodes.is_empty() && data.busy_nodes.is_empty() && data.drain_nodes.is_empty() {
+    if data.available_nodes.is_empty() && data.busy_nodes.is_empty() && data.drain_nodes.is_empty()
+    {
         println!("No matching GPU nodes found");
         println!();
         print_gpu_summary(0, 0, 0);
@@ -1100,7 +1175,10 @@ fn print_find_gpu_text(data: &SlurmFindGpuData) {
     }
 
     if !data.available_nodes.is_empty() {
-        println!("[AVAILABLE] Nodes with idle GPU ({})", data.available_nodes.len());
+        println!(
+            "[AVAILABLE] Nodes with idle GPU ({})",
+            data.available_nodes.len()
+        );
         print_gpu_table(&data.available_nodes);
     }
     if !data.busy_nodes.is_empty() {
@@ -1127,8 +1205,8 @@ fn print_find_gpu_text(data: &SlurmFindGpuData) {
 
 fn print_gpu_table(nodes: &[SlurmGpuNode]) {
     println!(
-        "{:<20} {:<12} {:<15} {:<15} {}",
-        "NODE", "PARTITION", "GPU IDLE/TOTAL", "CPU IDLE/TOTAL", "GPU TYPE"
+        "{:<20} {:<12} {:<15} {:<15} GPU TYPE",
+        "NODE", "PARTITION", "GPU IDLE/TOTAL", "CPU IDLE/TOTAL"
     );
     for node in nodes {
         println!(
@@ -1159,7 +1237,10 @@ fn print_connection_detail(connection: &ConnectionRecord) {
     println!("Connection");
     println!("  id: {}", connection.id);
     println!("  label: {}", connection.label);
-    println!("  kind: {}", format!("{:?}", connection.kind).to_lowercase());
+    println!(
+        "  kind: {}",
+        format!("{:?}", connection.kind).to_lowercase()
+    );
     println!(
         "  endpoint: {}",
         match (&connection.host, connection.port, &connection.username) {
@@ -1193,7 +1274,10 @@ fn parse_gpu_gres_local(gres: &str) -> (u32, Option<String>) {
         .and_then(|re| re.captures(&lower))
     {
         return (
-            captures.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
+            captures
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0),
             captures.get(1).map(|m| m.as_str().to_ascii_uppercase()),
         );
     }
@@ -1202,7 +1286,10 @@ fn parse_gpu_gres_local(gres: &str) -> (u32, Option<String>) {
         .and_then(|re| re.captures(&lower))
     {
         return (
-            captures.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
+            captures
+                .get(1)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0),
             Some("UNKNOWN".to_string()),
         );
     }
@@ -1277,23 +1364,23 @@ fn parse_partition_info(
         };
         let (_, cpu_idle, _, cpu_total) = parse_cpu_alloc(cpu);
         let (gpu_total, gpu_type) = parse_gpu_gres_local(gres);
-        partitions
-            .entry(partition.to_string())
-            .or_default()
-            .insert(
-                node.to_string(),
-                PartitionNodeInfo {
-                    node: node.to_string(),
-                    cpu_idle,
-                    cpu_total,
-                    jobs: 0,
-                    mem: mem.to_string(),
-                    gpu_idle: gpu_total,
-                    gpu_total,
-                    gpu_type,
-                },
-            );
+        partitions.entry(partition.to_string()).or_default().insert(
+            node.to_string(),
+            PartitionNodeInfo {
+                node: node.to_string(),
+                cpu_idle,
+                cpu_total,
+                jobs: 0,
+                mem: mem.to_string(),
+                gpu_idle: gpu_total,
+                gpu_total,
+                gpu_type,
+            },
+        );
     }
+
+    let gpu_count_regex = regex::Regex::new(r"gpu:\w*:?(\d+)")
+        .context("failed to compile partition-info GPU usage regex")?;
 
     for line in jobs_stdout.lines().filter(|line| !line.trim().is_empty()) {
         let parts: Vec<&str> = line.split('|').collect();
@@ -1302,13 +1389,16 @@ fn parse_partition_info(
         }
         let node_list = parts[1];
         let gres = parts[2].to_ascii_lowercase();
-        let used_gpu = regex::Regex::new(r"gpu:\w*:?(\d+)")
-            .ok()
-            .and_then(|re| re.captures(&gres))
+        let used_gpu = gpu_count_regex
+            .captures(&gres)
             .and_then(|captures| captures.get(1))
             .and_then(|value| value.as_str().parse::<u32>().ok())
             .unwrap_or(0);
-        for node in node_list.split(',').map(str::trim).filter(|node| !node.is_empty()) {
+        for node in node_list
+            .split(',')
+            .map(str::trim)
+            .filter(|node| !node.is_empty())
+        {
             for nodes in partitions.values_mut() {
                 if let Some(info) = nodes.get_mut(node) {
                     info.jobs += 1;
@@ -1350,7 +1440,10 @@ fn print_node_jobs_text(data: &NodeJobsData) {
     if data.running_jobs.is_empty() {
         println!("  None");
     } else {
-        println!("{:<10} {:<25} {:<12} {:<12} {}", "JOBID", "Name", "User", "Runtime", "Memory");
+        println!(
+            "{:<10} {:<25} {:<12} {:<12} Memory",
+            "JOBID", "Name", "User", "Runtime"
+        );
         for job in &data.running_jobs {
             println!(
                 "{:<10} {:<25} {:<12} {:<12} {}",
@@ -1367,7 +1460,10 @@ fn print_node_jobs_text(data: &NodeJobsData) {
     if data.pending_jobs.is_empty() {
         println!("  None");
     } else {
-        println!("{:<10} {:<25} {:<12} {:<12} {}", "JOBID", "Name", "User", "WaitTime", "Memory");
+        println!(
+            "{:<10} {:<25} {:<12} {:<12} Memory",
+            "JOBID", "Name", "User", "WaitTime"
+        );
         for job in &data.pending_jobs {
             println!(
                 "{:<10} {:<25} {:<12} {:<12} {}",
@@ -1389,7 +1485,10 @@ fn print_partition_info_text(data: &PartitionInfoData) {
         if !section.gpu_nodes.is_empty() {
             println!();
             println!("[GPU Nodes] ({})", section.gpu_nodes.len());
-            println!("{:<18} {:<14} {:<14} {:<8} {}", "Node", "GPU Idle/Total", "CPU Idle/Total", "Jobs", "Memory");
+            println!(
+                "{:<18} {:<14} {:<14} {:<8} Memory",
+                "Node", "GPU Idle/Total", "CPU Idle/Total", "Jobs"
+            );
             for node in &section.gpu_nodes {
                 println!(
                     "{:<18} {:<14} {:<14} {:<8} {}",
@@ -1404,7 +1503,10 @@ fn print_partition_info_text(data: &PartitionInfoData) {
         if !section.cpu_nodes.is_empty() {
             println!();
             println!("[CPU Nodes] ({})", section.cpu_nodes.len());
-            println!("{:<18} {:<14} {:<8} {}", "Node", "CPU Idle/Total", "Jobs", "Memory");
+            println!(
+                "{:<18} {:<14} {:<8} Memory",
+                "Node", "CPU Idle/Total", "Jobs"
+            );
             for node in &section.cpu_nodes {
                 println!(
                     "{:<18} {:<14} {:<8} {}",
@@ -1428,7 +1530,11 @@ fn build_salloc_command(
     nodelist: Option<&str>,
     max_wait: Option<u32>,
 ) -> String {
-    let mut parts = vec!["salloc".to_string(), "-p".to_string(), partition.to_string()];
+    let mut parts = vec![
+        "salloc".to_string(),
+        "-p".to_string(),
+        partition.to_string(),
+    ];
     if let Some(cpus) = cpus {
         parts.push(format!("--cpus-per-task={cpus}"));
     }
@@ -1503,13 +1609,15 @@ where
         .context("failed to contact local server")?;
 
     let status = response.status();
-    let body = response.text().context("failed to read server response body")?;
+    let body = response
+        .text()
+        .context("failed to read server response body")?;
     if !status.is_success() {
         bail!("server returned {}: {}", status, body);
     }
 
-    let payload = serde_json::from_str::<T>(&body)
-        .with_context(|| decode_error_context.to_string())?;
+    let payload =
+        serde_json::from_str::<T>(&body).with_context(|| decode_error_context.to_string())?;
     Ok(payload)
 }
 
@@ -1636,7 +1744,10 @@ cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
         let jobs = "9001|gpu-a10-1|gpu:1|00:10\n";
         let parsed = parse_partition_info(nodes, jobs, None).unwrap();
         assert_eq!(parsed.partitions.len(), 2);
-        assert_eq!(parsed.partitions[0].gpu_nodes.len() + parsed.partitions[0].cpu_nodes.len(), 1);
+        assert_eq!(
+            parsed.partitions[0].gpu_nodes.len() + parsed.partitions[0].cpu_nodes.len(),
+            1
+        );
         let gpu_section = parsed
             .partitions
             .iter()

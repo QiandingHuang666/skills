@@ -4,39 +4,42 @@
 
 ---
 
-## 1. 会话开始：先检查
+## 1. 会话开始：先看本机 server
 
 ```bash
-uv run python "$SCRIPT" init --check --output-json --fast
+cargo run --quiet --bin slurm-client -- server status --json
+```
+
+如果失败，先在与 client 同机的位置启动：
+
+```bash
+cargo run --quiet --bin slurm-server -- serve
+```
+
+然后重试 `server status`。
+
+---
+
+## 2. 连接分流
+
+先列连接：
+
+```bash
+cargo run --quiet --bin slurm-client -- connection list --json
 ```
 
 只看：
 
-- `configured`
-- `config_valid`
-- `local_slurm_available`
-- `connection_count`
-- `connections`
-- `current_agent_authorized`
+- 是否有可用连接
+- 每个连接的 `id`
+- 每个连接的 `kind`
+- `label / host / port / user`
 
----
+分流规则：
 
-## 2. 三路分流
-
-### 未配置
-
-- 在集群上 → `workflow_local_execution.md`
-- 不在集群上 / 需要 SSH → `workflow_init.md`
-
-### 已配置但无效
-
-- 停止执行用户原请求
-- 先修配置，再继续
-
-### 已配置且有效
-
-- 单连接 → 直接执行
-- 多连接 → 先 `connection --list`，再选连接
+- `0` 个连接：去 `workflow_init.md`
+- `1` 个连接：直接使用这个 `connection_id`
+- 多个连接：按用户意图选 `cluster`、`instance` 或 `local`
 
 ---
 
@@ -45,41 +48,42 @@ uv run python "$SCRIPT" init --check --output-json --fast
 ### 资源查看
 
 ```bash
-uv run python "$SCRIPT" status --gpu
-uv run python "$SCRIPT" find-gpu
+cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
+cargo run --quiet --bin slurm-client -- find-gpu --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- partition-info --connection <connection_id> --json
 ```
 
 ### 作业管理
 
 ```bash
-uv run python "$SCRIPT" jobs
-uv run python "$SCRIPT" submit <script>
-uv run python "$SCRIPT" log <job_id>
-uv run python "$SCRIPT" cancel <job_id>
-uv run python "$SCRIPT" alloc -p <partition> [-g gpu:1]
+cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- submit --connection <connection_id> <script>
+cargo run --quiet --bin slurm-client -- log <job_id> --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- cancel <job_id> --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- alloc --connection <connection_id> -p <partition> [-g gpu:1] --json
 ```
 
 ### 文件传输
 
 ```bash
-uv run python "$SCRIPT" upload <local> <remote>
-uv run python "$SCRIPT" download <remote> <local>
+cargo run --quiet --bin slurm-client -- upload <local> <remote> --connection <connection_id> --json
+cargo run --quiet --bin slurm-client -- download <remote> <local> --connection <connection_id> --json
 ```
 
 ### 环境配置
 
-涉及安装/编译/大下载时，先判断是否在登录节点；若是，先申请资源。
+涉及安装、编译、大下载时，先判断是否在登录节点；若是，先申请资源。
 
 ### 多连接 / 实例
 
 ```bash
-uv run python "$SCRIPT" connection --list
+cargo run --quiet --bin slurm-client -- connection list --json
 ```
 
 ### 任意远程命令
 
 ```bash
-uv run python "$SCRIPT" exec -c '<cmd>'
+cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd '<cmd>' --json
 ```
 
 只在现有子命令不够用时使用。
@@ -88,10 +92,10 @@ uv run python "$SCRIPT" exec -c '<cmd>'
 
 ## 4. 安全分级
 
-- A 类：只读/轻量 → 直接执行
-- B 类：会改用户目录 → 说明后执行
-- C 类：重操作 → 不在登录节点直接做
-- D 类：危险/破坏性 → 必须先确认
+- A 类：只读/轻量，直接执行
+- B 类：会改用户目录，说明后执行
+- C 类：重操作，不在登录节点直接做
+- D 类：危险/破坏性，必须先确认
 
 ---
 
@@ -103,4 +107,3 @@ uv run python "$SCRIPT" exec -c '<cmd>'
 - 作业：`workflow_job.md`
 - 文件：`workflow_file_transfer.md`
 - 环境：`workflow_env_config.md`
-

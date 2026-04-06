@@ -1,129 +1,134 @@
 # Agent Skills for Graduate Students
 
-为高校研究生日常学习与科研定制的 Claude Code Skills 集合。
+为高校研究生日常学习与科研计算定制的 Codex Skills 集合。
 
 ## 简介
 
-本项目包含一系列专门为高校研究生设计的 Claude Code Skills，旨在帮助学生更高效地完成科研计算、集群使用等日常任务。
+当前仓库重点维护 `slurm-assistant`。它已经从单体 Python CLI 演进为 `server + client + skill` 架构：
 
-## 包含的 Skills
+- `slurm-server`：常驻本机，负责保存运行时信息、持久化连接配置、转发 SSH/Slurm 操作
+- `slurm-client`：给 agent 和终端直接调用的统一命令行接口
+- `SKILL.md`：给模型的最小决策树、工作流约束和输出规范
 
-### Slurm Assistant
+该方案面向 Windows/macOS/Linux，默认采用“client 只访问同机 server”的简单模型；远程集群访问通过 server 调用系统 `ssh` / `scp` 完成。
 
-Slurm HPC 集群助手，为高校学生/教师定制，支持本地（集群上）和远程（集群外）两种使用模式。
+需要区分两层含义：
 
-**功能特性：**
+- `slurm-assistant` 自身运行时已经不依赖 Python
+- 文档里出现的 `python`、`uv run python`、`conda`，通常只是用户在集群上运行自己的科研脚本
 
-- 集群资源状态查看（分区、节点、GPU可用性）
-- 交互式资源申请与释放
-- 作业脚本生成与提交
-- 作业状态监控与日志查看
-- 作业取消与管理
-- SSH 免密登录配置引导
-- 分区硬件配置缓存（避免重复查询）
-- GPU 资源快速查找
-- **智能资源申请**：自动检查资源可用性，计算最优 CPU 数量
-- **实例连接支持**：支持连接 IP 相同、端口不同的实例
-- **多 Agent 支持**：支持 Claude Code、Codex CLI、OpenCLAW
+## Slurm Assistant
 
-**v0.1.1 新增功能：**
+Slurm HPC 集群助手，适合高校公共集群、个人服务器、实例和本地集群节点混合使用。
 
-- 使用 `scontrol show node` 获取精确 GPU 分配信息
-- 智能计算推荐 CPU 数量：`min(空闲CPU, CPU/GPU比例 × GPU数量)`
-- 申请前自动检查资源，资源不足时提示排队时间
-- 自动过滤 DRAIN 状态节点
-- 按 Agent 名称记录授权状态
-- 禁止在登录节点进行费资源操作的提示
+当前 Rust 版本已覆盖：
 
-**适用场景：**
+- server 状态检查
+- 连接管理：`add`、`list`、`get`、`remove`
+- 资源查询：`status --gpu`、`find-gpu`、`partition-info`、`node-info`、`node-jobs`
+- 作业流程：`jobs`、`submit`、`log`、`cancel`、`alloc`、`release`、`run`
+- 文件传输：`upload`、`download`
+- 兜底执行：`exec`
 
-- 提交训练任务到 GPU 集群
-- 查看集群资源空闲情况
-- 申请交互式开发环境
-- 管理运行中的作业
-- 生成 Slurm 作业脚本
-- 连接手动申请的实例
-
-**使用示例：**
-
-```
-"查看集群状态"
-"帮我提交一个 GPU 训练作业"
-"申请一个 A100 GPU 节点"
-"我的作业进度怎么样"
-"生成一个 PyTorch 训练脚本"
-"帮我连接实例"（实例端口是 12345）
-```
-
-## 安装
-
-### 全局安装
+## 安装 Skill
 
 将 skill 复制到 Agent 的全局 skills 目录：
 
 ```bash
-# Claude Code
-cp -r slurm-assistant ~/.claude/skills/
-
 # Codex CLI
 cp -r slurm-assistant ~/.codex/skills/
+
+# Claude Code
+cp -r slurm-assistant ~/.claude/skills/
 
 # OpenCLAW
 cp -r slurm-assistant ~/.openclaw/skills/
 ```
 
-### 项目级安装
+## 本地开发
 
-将 skill 放在项目的 `.claude/skills/` 目录下：
+### 构建 Rust 二进制
 
 ```bash
-mkdir -p your-project/.claude/skills
-cp -r slurm-assistant your-project/.claude/skills/
+cd slurm-assistant/rust
+cargo build
+```
+
+### 启动本机 server
+
+```bash
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-server -- serve
+```
+
+### 调用 client
+
+```bash
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- server status --json
+```
+
+### 添加贵州大学集群连接
+
+```bash
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection add \
+  --label gzu-cluster \
+  --host 210.40.56.85 \
+  --port 21563 \
+  --user qiandingh \
+  --kind cluster \
+  --json
 ```
 
 ## 目录结构
 
-```
+```text
 .
 ├── README.md
 └── slurm-assistant/
-    ├── SKILL.md                 # Skill 主文档
-    ├── scripts/
-    │   └── slurm-cli.py         # 核心命令行工具
-    └── references/
-        ├── job_templates.md     # 作业脚本模板
-        └── common_errors.md     # 常见错误解决方案
+    ├── SKILL.md
+    ├── references/
+    ├── rust/
+    │   ├── Cargo.toml
+    │   ├── crates/
+    │   │   ├── slurm-client/
+    │   │   ├── slurm-proto/
+    │   │   └── slurm-server/
+    │   └── scripts/
+    │       └── live_smoke_gzu.sh
+    ├── evals/
+    └── scripts/
+```
+
+## 测试
+
+Rust 单元测试：
+
+```bash
+cd slurm-assistant/rust
+cargo test
+```
+
+贵州大学实机 smoke：
+
+```bash
+cd slurm-assistant/rust
+bash scripts/live_smoke_gzu.sh
 ```
 
 ## 技术栈
 
-- **Python 3.x** - 核心脚本语言
-- **SSH** - 远程集群连接
-- **Slurm** - HPC 作业调度系统
-- **uv/uvx** - 推荐的 Python 环境管理工具
+- Rust
+- SQLite
+- Slurm
+- SSH / SCP
 
 ## 兼容性
 
-**支持的 Agent CLI：**
-- Claude Code
-- Codex CLI
-- OpenCLAW
-
-**运行环境：**
-- Bash shell
-- uv/uvx（优先）或 python3
-
-## 预设集群
-
-目前内置以下集群的预设配置：
-
-- 贵州大学 HPC 集群
-
-更多集群配置可通过交互式配置向导添加。
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request 来添加新功能或支持更多集群。
+- Agent CLI：Codex CLI、Claude Code、OpenCLAW
+- 操作系统：Windows、macOS、Linux
+- 远程执行：依赖系统 `ssh` / `scp`
 
 ## 许可证
 

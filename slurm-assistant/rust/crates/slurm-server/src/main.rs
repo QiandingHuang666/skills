@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     io::Read,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -10,14 +9,14 @@ use std::{
 
 use anyhow::{Context, Result};
 use axum::{
+    Json, Router,
     extract::{Path as AxumPath, State},
-    http::{header::AUTHORIZATION, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header::AUTHORIZATION},
     response::IntoResponse,
     routing::{get, post},
-    Json, Router,
 };
 use clap::{Parser, Subcommand};
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use slurm_proto::{
     ConnectionAddData, ConnectionAddRequest, ConnectionDeleteData, ConnectionKind,
     ConnectionListData, ConnectionRecord, ErrorBody, ErrorCode, ErrorResponse, ExecRunData,
@@ -30,7 +29,10 @@ use slurm_proto::{
 use wait_timeout::ChildExt;
 
 #[derive(Debug, Parser)]
-#[command(name = "slurm-server", about = "Rust server scaffold for slurm-assistant")]
+#[command(
+    name = "slurm-server",
+    about = "Rust server scaffold for slurm-assistant"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -84,7 +86,9 @@ async fn serve(requested_port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", requested_port))
         .await
         .with_context(|| format!("failed to bind localhost:{}", requested_port))?;
-    let addr = listener.local_addr().context("failed to read local address")?;
+    let addr = listener
+        .local_addr()
+        .context("failed to read local address")?;
 
     let runtime = RuntimeFile {
         version: 1,
@@ -130,7 +134,10 @@ fn print_local_status() -> Result<()> {
         db_path: paths.db_path.display().to_string(),
         runtime_path: paths.runtime_path.display().to_string(),
     };
-    println!("{}", serde_json::to_string_pretty(&SuccessResponse::new(status))?);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&SuccessResponse::new(status))?
+    );
     Ok(())
 }
 
@@ -409,7 +416,10 @@ fn resolve_paths() -> Result<Paths> {
         PathBuf::from(xdg_state).join("slurm-assistant")
     } else {
         let home = env::var("HOME").context("HOME not set")?;
-        PathBuf::from(home).join(".local").join("share").join("slurm-assistant")
+        PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("slurm-assistant")
     };
 
     Ok(Paths {
@@ -429,7 +439,8 @@ fn write_runtime_file(path: &Path, runtime: &RuntimeFile) -> Result<()> {
 }
 
 fn read_runtime_file(path: &Path) -> Result<RuntimeFile> {
-    let bytes = fs::read(path).with_context(|| format!("failed to read runtime file {}", path.display()))?;
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read runtime file {}", path.display()))?;
     let runtime = serde_json::from_slice::<RuntimeFile>(&bytes)
         .with_context(|| format!("failed to parse runtime file {}", path.display()))?;
     Ok(runtime)
@@ -461,7 +472,8 @@ fn init_db(path: &Path) -> Result<()> {
 }
 
 fn open_db(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path).with_context(|| format!("failed to open db {}", path.display()))?;
+    let conn =
+        Connection::open(path).with_context(|| format!("failed to open db {}", path.display()))?;
     conn.pragma_update(None, "journal_mode", "WAL")
         .context("failed to enable WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")
@@ -563,7 +575,9 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
     });
     match record {
         Ok(conn) => Ok(conn),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Err(anyhow::anyhow!("connection not found: {connection_id}")),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Err(anyhow::anyhow!("connection not found: {connection_id}"))
+        }
         Err(err) => Err(err).context("failed to decode connection record"),
     }
 }
@@ -613,7 +627,10 @@ fn query_slurm_jobs(path: &Path, request: &SlurmJobsRequest) -> Result<SlurmJobs
     })
 }
 
-fn query_slurm_status_gpu(path: &Path, request: &SlurmStatusGpuRequest) -> Result<SlurmStatusGpuData> {
+fn query_slurm_status_gpu(
+    path: &Path,
+    request: &SlurmStatusGpuRequest,
+) -> Result<SlurmStatusGpuData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     let nodes = query_scontrol_gpu_nodes(&connection)?;
 
@@ -766,7 +783,10 @@ fn handle_download(path: &Path, request: &FileDownloadRequest) -> Result<FileTra
     })
 }
 
-fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(String, Vec<String>)> {
+fn build_exec_program(
+    connection: &ConnectionRecord,
+    command: &str,
+) -> Result<(String, Vec<String>)> {
     match connection.kind {
         ConnectionKind::Local => {
             if cfg!(windows) {
@@ -790,7 +810,10 @@ fn build_exec_program(connection: &ConnectionRecord, command: &str) -> Result<(S
                 .username
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("remote connection missing username"))?;
-            let mut args = vec!["-o".to_string(), "StrictHostKeyChecking=accept-new".to_string()];
+            let mut args = vec![
+                "-o".to_string(),
+                "StrictHostKeyChecking=accept-new".to_string(),
+            ];
             if let Some(port) = connection.port {
                 args.push("-p".to_string());
                 args.push(port.to_string());
@@ -841,7 +864,9 @@ fn build_sbatch_command(script_path: &str) -> Result<String> {
         return Err(anyhow::anyhow!("script path must not be empty"));
     }
     if script_path.contains('\'') {
-        return Err(anyhow::anyhow!("script path must not contain single quotes"));
+        return Err(anyhow::anyhow!(
+            "script path must not contain single quotes"
+        ));
     }
     let rendered_path = if script_path == "~" {
         "$HOME".to_string()
@@ -857,7 +882,9 @@ fn parse_submitted_job_id(raw_output: &str) -> Result<String> {
     let captures = regex::Regex::new(r"Submitted batch job (\d+)")
         .context("failed to compile submit regex")?
         .captures(raw_output)
-        .ok_or_else(|| anyhow::anyhow!("failed to parse submitted job id from output: {raw_output}"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("failed to parse submitted job id from output: {raw_output}")
+        })?;
     Ok(captures
         .get(1)
         .ok_or_else(|| anyhow::anyhow!("submit output missing job id capture"))?
@@ -974,7 +1001,9 @@ fn copy_file_like_cp(src: &Path, dst: &Path) -> Result<()> {
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)
         .with_context(|| format!("failed to create destination dir {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read dir {}", src.display()))? {
+    for entry in
+        fs::read_dir(src).with_context(|| format!("failed to read dir {}", src.display()))?
+    {
         let entry = entry.with_context(|| format!("failed to read entry in {}", src.display()))?;
         let file_type = entry
             .file_type()
@@ -1019,10 +1048,10 @@ fn matches_token(haystack: &str, needle: &str) -> bool {
 fn parse_gpu_gres(gres: &str) -> (u32, String) {
     let lower = gres.to_ascii_lowercase();
     let typed = regex_extract(&lower, r"gpu:([a-zA-Z_]\w*):(\d+)");
-    if let Some((gpu_type, count)) = typed {
-        if let Ok(count) = count.parse::<u32>() {
-            return (count, gpu_type.to_string());
-        }
+    if let Some((gpu_type, count)) = typed
+        && let Ok(count) = count.parse::<u32>()
+    {
+        return (count, gpu_type.to_string());
     }
     let simple = regex_extract_single(&lower, r"gpu:(\d+)");
     if let Some(count) = simple.and_then(|value| value.parse::<u32>().ok()) {
@@ -1082,7 +1111,9 @@ fn parse_scontrol_gpu_nodes_output(stdout: &str) -> Result<Vec<ParsedGpuNode>> {
         let cpu_total = current_cpu_total.unwrap_or(0);
         let cpu_alloc = current_cpu_alloc.unwrap_or(0);
         let cpu_idle = cpu_total.saturating_sub(cpu_alloc);
-        let state = current_state.take().unwrap_or_else(|| "UNKNOWN".to_string());
+        let state = current_state
+            .take()
+            .unwrap_or_else(|| "UNKNOWN".to_string());
         nodes.push(ParsedGpuNode {
             node: node_name,
             partition: current_partition
@@ -1397,7 +1428,12 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(Request::builder().uri("/v1/ping").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/ping")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -1513,10 +1549,7 @@ mod tests {
         let (program, args) = if cfg!(windows) {
             (
                 "cmd".to_string(),
-                vec![
-                    "/C".to_string(),
-                    "ping -n 3 127.0.0.1 >NUL".to_string(),
-                ],
+                vec!["/C".to_string(), "ping -n 3 127.0.0.1 >NUL".to_string()],
             )
         } else {
             (
@@ -1675,13 +1708,18 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         let (program, args) =
             build_scp_program(&connection, "/tmp/train.py", "~/train.py", false, false).unwrap();
         assert_eq!(program, "scp");
-        assert_eq!(args.last().map(String::as_str), Some("qiandingh@210.40.56.85:~/train.py"));
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("qiandingh@210.40.56.85:~/train.py")
+        );
 
         let (_, download_args) =
             build_scp_program(&connection, "~/slurm.out", "/tmp/slurm.out", false, true).unwrap();
-        assert!(download_args
-            .iter()
-            .any(|value| value == "qiandingh@210.40.56.85:~/slurm.out"));
+        assert!(
+            download_args
+                .iter()
+                .any(|value| value == "qiandingh@210.40.56.85:~/slurm.out")
+        );
     }
 
     #[test]
@@ -1692,12 +1730,7 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         fs::create_dir_all(&dst_dir).unwrap();
         fs::write(&src, "hello").unwrap();
 
-        local_transfer(
-            src.to_str().unwrap(),
-            dst_dir.to_str().unwrap(),
-            false,
-        )
-        .unwrap();
+        local_transfer(src.to_str().unwrap(), dst_dir.to_str().unwrap(), false).unwrap();
 
         let copied = dst_dir.join("src.txt");
         assert_eq!(fs::read_to_string(copied).unwrap(), "hello");

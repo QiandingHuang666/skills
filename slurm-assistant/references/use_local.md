@@ -22,7 +22,10 @@
 ## 保存配置
 
 ```bash
-uv run python "$SCRIPT" init --mode local --cluster-name "名称"
+cargo run --quiet --bin slurm-client -- connection add \
+  --label "名称" \
+  --kind local \
+  --json
 ```
 
 ## 提示可用功能
@@ -45,7 +48,6 @@ uv run python "$SCRIPT" init --mode local --cluster-name "名称"
 - jobs       查看作业状态
 - log        查看作业日志
 - cancel     取消作业
-- history    作业历史
 
 文件传输：
 - upload     上传文件（本地复制）

@@ -1,0 +1,43 @@
+name: rust-ci
+
+on:
+  push:
+    paths:
+      - "slurm-assistant/rust/**"
+      - "slurm-assistant/SKILL.md"
+      - "slurm-assistant/references/**"
+      - "README.md"
+      - ".github/workflows/rust-ci.yml"
+  pull_request:
+    paths:
+      - "slurm-assistant/rust/**"
+      - "slurm-assistant/SKILL.md"
+      - "slurm-assistant/references/**"
+      - "README.md"
+      - ".github/workflows/rust-ci.yml"
+  workflow_dispatch:
+
+jobs:
+  rust-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: slurm-assistant/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo test
+        run: cargo test --workspace
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  docs-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject Python-first examples in migrated docs
+        run: |
+          ! rg -n 'uv run python "\$SCRIPT"|python3 "\$SCRIPT"|slurm-cli\.py' README.md slurm-assistant/SKILL.md slurm-assistant/references/commands.md slurm-assistant/references/minimal_decision_tree.md slurm-assistant/references/workflow_init.md slurm-assistant/references/workflow_status.md slurm-assistant/references/workflow_file_transfer.md slurm-assistant/references/workflow_local_execution.md slurm-assistant/references/workflow_job.md slurm-assistant/references/workflow_env_config.md slurm-assistant/references/gzu_public_resources.md slurm-assistant/references/use_gzu.md slurm-assistant/references/use_local.md slurm-assistant/references/use_other.md

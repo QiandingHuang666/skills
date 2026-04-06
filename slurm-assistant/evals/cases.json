@@ -1,122 +1,113 @@
 [
   {
-    "name": "init_check_fast",
+    "name": "server_status",
     "category": "preflight",
-    "prompt": "会话开始后先检查配置状态。",
+    "prompt": "会话开始后先检查本机 server 状态。",
     "trace_rules": {
       "must_contain_commands": [
-        "init --check --output-json --fast"
-      ],
-      "must_not_contain_commands": []
+        "slurm-client -- server status --json"
+      ]
     },
     "live_probe": {
-      "argv": ["init", "--check", "--output-json", "--fast"],
-      "parser": "init_check",
-      "assert": {
-        "fields_present": [
-          "configured",
-          "config_valid",
-          "local_slurm_available",
-          "connection_count",
-          "connections",
-          "current_agent_authorized"
-        ]
-      }
+      "argv": ["server", "status", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_nonempty", "expr": ".data.transport" },
+        { "kind": "jq_nonempty", "expr": ".data.host" },
+        { "kind": "jq_true", "expr": ".data.port > 0" }
+      ]
     }
   },
   {
     "name": "connection_list",
     "category": "routing",
-    "prompt": "多连接时应先查看连接列表再决定使用哪个连接。",
+    "prompt": "多连接或首次执行前应先查看连接列表。",
     "trace_rules": {
       "must_contain_commands": [
-        "connection --list"
-      ],
-      "must_not_contain_commands": []
+        "slurm-client -- connection list --json"
+      ]
     },
     "live_probe": {
-      "argv": ["connection", "--list"],
-      "parser": "connection_list",
-      "assert": {
-        "min_rows": 1,
-        "at_least_one_active": true
-      }
+      "argv": ["connection", "list", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_true", "expr": ".data.connections | length >= 1" }
+      ]
     }
   },
   {
     "name": "gpu_status",
     "category": "read-only",
-    "prompt": "查看 GPU 资源时，应优先使用 status --gpu 或 find-gpu，并能从返回中读出可用节点和空闲 GPU 总数。",
+    "prompt": "查看 GPU 资源时，应优先使用 status --gpu。",
     "trace_rules": {
       "must_contain_one_of_commands": [
-        ["status --gpu", "find-gpu"]
+        ["slurm-client -- status .* --gpu", "slurm-client -- find-gpu"]
       ],
       "must_not_contain_commands": [
-        "exec -c .*scontrol show node"
+        "exec .*scontrol show node"
       ]
     },
     "live_probe": {
-      "argv": ["status", "--gpu"],
-      "parser": "gpu_status",
-      "assert": {
-        "must_have_summary": true,
-        "summary_fields": ["available_nodes", "total_gpu", "idle_gpu"]
-      }
+      "argv": ["status", "--connection", "__CONNECTION_ID__", "--gpu", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_nonempty", "expr": ".data.summary.available_nodes" },
+        { "kind": "jq_nonempty", "expr": ".data.summary.total_gpu" },
+        { "kind": "jq_nonempty", "expr": ".data.summary.idle_gpu" }
+      ]
     }
   },
   {
     "name": "find_gpu",
     "category": "read-only",
-    "prompt": "查找 GPU 时应能从 find-gpu 输出中区分可用节点、忙节点和排空节点。",
+    "prompt": "查找 GPU 时应优先使用 find-gpu。",
     "trace_rules": {
       "must_contain_commands": [
-        "find-gpu"
-      ],
-      "must_not_contain_commands": []
+        "slurm-client -- find-gpu"
+      ]
     },
     "live_probe": {
-      "argv": ["find-gpu"],
-      "parser": "find_gpu",
-      "assert": {
-        "must_have_summary": true,
-        "summary_fields": ["available_nodes", "idle_gpu"]
-      }
+      "argv": ["find-gpu", "a10", "--connection", "__CONNECTION_ID__", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_nonempty", "expr": ".data.summary.available_nodes" },
+        { "kind": "jq_nonempty", "expr": ".data.summary.idle_gpu" }
+      ]
     }
   },
   {
     "name": "jobs_output",
     "category": "read-only",
-    "prompt": "查看作业时，模型应能从 jobs 输出中识别表头和作业行；如果无作业，也要正确说明为空。",
+    "prompt": "查看作业时应优先使用 jobs。",
     "trace_rules": {
       "must_contain_commands": [
-        "jobs"
-      ],
-      "must_not_contain_commands": []
+        "slurm-client -- jobs"
+      ]
     },
     "live_probe": {
-      "argv": ["jobs"],
-      "parser": "jobs_table",
-      "assert": {
-        "accept_empty": true
-      }
+      "argv": ["jobs", "--connection", "__CONNECTION_ID__", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_true", "expr": ".data.jobs | type == \"array\"" }
+      ]
     }
   },
   {
     "name": "log_missing_file",
     "category": "read-only",
-    "prompt": "查看不存在的日志文件时，模型应能识别出“Log file not found”而不是误判为脚本错误。",
+    "prompt": "查看不存在的日志文件时应识别 missing log，而不是误判为命令异常。",
     "trace_rules": {
       "must_contain_commands": [
-        "log 0"
-      ],
-      "must_not_contain_commands": []
+        "slurm-client -- log"
+      ]
     },
     "live_probe": {
-      "argv": ["log", "0"],
-      "parser": "plain_text",
-      "assert": {
-        "must_contain_text": ["Log file not found"]
-      }
+      "argv": ["log", "999999999", "--connection", "__CONNECTION_ID__", "--json"],
+      "assertions": [
+        { "kind": "jq_true", "expr": ".ok == true" },
+        { "kind": "jq_true", "expr": ".data.found == false" },
+        { "kind": "jq_match", "expr": ".data.content", "pattern": "Log file not found" }
+      ]
     }
   }
 ]

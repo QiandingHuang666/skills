@@ -1,177 +1,142 @@
 # 首次使用流程
 
-slurm-assistant 首次使用的配置和初始化流程。
+Rust 版 `slurm-assistant` 的初始化目标只有两件事：
+
+1. 确保与 client 同机的 `slurm-server` 已启动
+2. 创建至少一个可用的连接记录
 
 ---
 
-## 1. 检查配置状态
+## 1. 启动并检查 server
 
 ```bash
-# 完整检查（包含 SSH 连接测试，较慢）
-uv run python "$SCRIPT" init --check --output-json
-
-# 快速检查（跳过 SSH 连接测试，推荐）
-uv run python "$SCRIPT" init --check --output-json --fast
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-server -- serve
 ```
 
-**参数说明：**
-- `--fast`: 快速模式，跳过 SSH 连接测试，适合频繁检查
+另一个终端检查：
 
-**输出示例：**
-```json
-{"configured": false, "local_slurm_available": false}
+```bash
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- server status --json
 ```
 
 ---
 
-## 2. 如果未配置，收集配置信息
+## 2. 收集用户场景
 
-### 第一步：询问使用场景
+根据用户场景选择一种连接类型：
 
-使用 `AskUserQuestion` 工具：
+- 公共 Slurm 集群：`kind=cluster`
+- 独立实例：`kind=instance`
+- 当前已在集群节点上：`kind=local`
 
-```json
-{
-  "questions": [
-    {
-      "question": "请选择您的使用场景",
-      "options": [
-        "贵州大学 HPC 集群",
-        "其他 Slurm 集群（远程）",
-        "当前已在集群上（本地模式）"
-      ]
-    }
-  ]
-}
-```
+如果是贵州大学 HPC，固定参数为：
 
-### 第二步：根据选择继续收集
-
-#### A. 贵州大学 HPC 集群
-
-```json
-{
-  "questions": [
-    {
-      "question": "请输入您的贵州大学 HPC 集群用户名",
-      "options": ["输入用户名"]
-    },
-    {
-      "question": "是否已配置免密登录？",
-      "options": ["已配置", "未配置，需要帮助"]
-    }
-  ]
-}
-```
-
-如未配置免密登录，参考 `references/set_free_password.md`
-
-#### B. 其他 Slurm 集群（远程）
-
-```json
-{
-  "questions": [
-    {"question": "请输入集群名称（如：xx大学超算）", "options": ["输入集群名称"]},
-    {"question": "请输入集群登录节点地址", "options": ["输入地址（如 login.hpc.edu）"]},
-    {"question": "请输入 SSH 端口", "options": ["22（默认）", "其他端口"]},
-    {"question": "请输入您的用户名", "options": ["输入用户名"]},
-    {"question": "是否需要通过跳板机连接？", "options": ["不需要", "需要"]},
-    {"question": "是否已配置免密登录？", "options": ["已配置", "未配置，需要帮助"]}
-  ]
-}
-```
-
-如未配置免密登录，参考 `references/set_free_password.md`
-
-#### C. 当前已在集群上（本地模式）
-
-```json
-{
-  "questions": [
-    {
-      "question": "请为这个集群命名（用于标识）",
-      "options": ["使用默认名称（local）", "输入自定义名称"]
-    }
-  ]
-}
-```
+- Host：`210.40.56.85`
+- Port：`21563`
 
 ---
 
-## 3. 保存配置
+## 3. 添加连接
 
 ### 贵州大学 HPC
 
 ```bash
-uv run python "$SCRIPT" init --mode remote \
-  --cluster-name "贵州大学 HPC" \
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection add \
+  --label gzu-cluster \
   --host 210.40.56.85 \
   --port 21563 \
-  --username "用户输入的用户名"
+  --user "<用户名>" \
+  --kind cluster \
+  --json
 ```
 
-### 其他集群
+### 其他远程集群
+
 ```bash
-uv run python "$SCRIPT" init --mode remote \
-  --cluster-name "用户输入的名称" \
-  --host "用户输入的地址" \
-  --port 用户输入的端口 \
-  --username "用户输入的用户名" \
-  --jump-host "跳板机地址（如有）"
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection add \
+  --label "<连接名>" \
+  --host "<host>" \
+  --port <port> \
+  --user "<用户名>" \
+  --kind cluster \
+  --jump-host "<jump_host，可选>" \
+  --json
 ```
 
-### 本地模式
+### 远程实例
+
 ```bash
-uv run python "$SCRIPT" init --mode local --cluster-name "用户输入的名称"
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection add \
+  --label "<实例名>" \
+  --host "<host>" \
+  --port <port> \
+  --user "<用户名>" \
+  --kind instance \
+  --json
+```
+
+### 集群本地模式
+
+```bash
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection add \
+  --label local-cluster \
+  --kind local \
+  --json
 ```
 
 ---
 
-## 4. 授权状态检查（必查）
+## 4. 验证连接
 
-**重要：配置保存后，必须检查授权状态！**
-
-### 检查授权状态
+先列出连接：
 
 ```bash
-uv run python "$SCRIPT" init --check --output-json --fast
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- connection list --json
 ```
 
-查看输出中的 `auto_exec_authorized` 字段：
-- `true`: 用户已授权，可以跳过授权询问
-- `false`: 用户未授权，必须询问
-
-### 授权询问
-
-如果 `auto_exec_authorized: false`，必须询问用户：
-
-```json
-{
-  "questions": [
-    {
-      "question": "为减少授权询问次数，是否允许 slurm-cli.py 自动执行命令？",
-      "options": [
-        "是，授权自动执行（推荐）",
-        "否，每次执行前确认"
-      ]
-    }
-  ]
-}
-```
-
-### 设置授权
-
-用户选择"是"后，执行授权命令：
+再做轻量探测：
 
 ```bash
-uv run python "$SCRIPT" init --authorize
+cd slurm-assistant/rust
+cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'hostname' --json
+```
+
+如果失败：
+
+- 检查 SSH 免密登录是否已配置
+- 检查 host / port / user 是否填错
+- 检查是否需要跳板机
+
+免密登录配置可参考 `references/set_free_password.md`。
+
+---
+
+## 5. 首个常用动作
+
+连接成功后，建议立即跑一个高层命令确认数据链路正常：
+
+```bash
+cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
+```
+
+或：
+
+```bash
+cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
 ```
 
 ---
 
 ## 相关文档
 
-- `references/set_free_password.md` - 免密登录配置
-- `references/use_gzu.md` - 贵州大学 HPC 配置详情
-- `references/use_other.md` - 其他集群配置详情
-- `references/use_local.md` - 本地模式使用
+- `references/commands.md`
+- `references/use_gzu.md`
+- `references/use_other.md`
+- `references/use_local.md`

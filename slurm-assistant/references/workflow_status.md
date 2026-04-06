@@ -6,16 +6,62 @@
 
 ## 查询场景分类
 
-当用户询问以下内容时，使用本流程：
-
-| 用户询问 | 对应命令 |
+| 用户询问 | 优先命令 |
 |---------|---------|
-| "我的作业"、"作业状态"、"队列情况" | `jobs` |
-| "GPU 情况"、"有哪些 GPU"、"GPU 空闲吗" | `status --gpu` 或 `find-gpu` |
-| "CPU 节点"、"CPU 资源"、"普通节点" | `status -p cpu` 或 `partition-info -p cpu` |
-| "节点状态"、"分区情况" | `status` 或 `partition-info` |
-| "某个节点上有谁在跑" | `node-jobs` |
-| "我的作业历史" | `history` |
+| “我的作业”“作业状态”“队列情况” | `jobs` |
+| “GPU 情况”“有哪些 GPU”“GPU 空闲吗” | `status --gpu` 或 `find-gpu` |
+| “CPU 节点”“CPU 资源”“普通节点” | `partition-info -p <partition>` |
+| “节点状态”“分区情况” | `partition-info` |
+| “某个节点上有谁在跑” | `node-jobs <node>` |
+| “这个节点详情” | `node-info <node>` |
+
+---
+
+## 推荐执行顺序
+
+1. 先确定 `connection_id`
+2. 优先调用高层子命令，不直接 `exec squeue/sinfo`
+3. 只有高层输出不够，才补充 `exec`
+
+---
+
+## 命令模板
+
+### 作业状态
+
+```bash
+cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
+```
+
+### GPU 资源
+
+```bash
+cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
+```
+
+或：
+
+```bash
+cargo run --quiet --bin slurm-client -- find-gpu a10 --connection <connection_id> --json
+```
+
+### 分区状态
+
+```bash
+cargo run --quiet --bin slurm-client -- partition-info --connection <connection_id> -p cpu48c --json
+```
+
+### 节点详情
+
+```bash
+cargo run --quiet --bin slurm-client -- node-info gpu-a10-01 --connection <connection_id> --json
+```
+
+### 节点作业
+
+```bash
+cargo run --quiet --bin slurm-client -- node-jobs gpu-a10-01 --connection <connection_id> --json
+```
 
 ---
 
@@ -23,172 +69,78 @@
 
 ### 作业状态报告
 
-使用 `jobs` 命令后，按以下格式向用户报告：
-
-```
+```text
 当前作业状态：
-[RUNNING] 作业ID 12345 - training | gpu-node01 | 运行 2小时30分
-[PENDING]  作业ID 12346 - inference | 排队中 | 等待 15分钟
+[RUNNING] 作业ID 12345 - training | gpu-a10-01 | 运行 2小时30分
+[PENDING] 作业ID 12346 - inference | 排队中 | 等待 15分钟
 ```
 
-**说明：**
-- 状态用方括号包裹，大写字母
-- 显示关键信息：作业 ID、名称、节点/排队状态、运行时间
+要求：
+
+- 状态用方括号包裹
+- 优先提炼“运行中 / 排队中 / 已完成 / 未找到”
+- 如果没有作业，要明确说明“当前没有可见作业”
 
 ### GPU 资源报告
 
-使用 `status --gpu` 或 `find-gpu` 后，按以下格式报告：
-
-```
+```text
 GPU 资源概览：
-节点 gpu-node01: 2/4 张 A100 空闲，8/32 CPU 空闲
-节点 gpu-node02: 0/4 张 A100 空闲，32/32 CPU 空闲（已满）
-节点 gpu-node03: 1/2 张 V100 空闲，16/24 CPU 空闲
+节点 gpu-a10-01: 2/4 张 A10 空闲，24/64 CPU 空闲
+节点 gpu-a100-02: 0/4 张 A100 空闲，8/64 CPU 空闲
 
-推荐：gpu-node01 有 2 张 A100 可用
+推荐：gpu-a10-01 目前最适合申请 1 张 A10
 ```
 
-**说明：**
-- 明确说明空闲 GPU 数量/总数
-- 明确说明空闲 CPU 数量/总数
-- 有可用资源时给出推荐
+要求：
 
-### CPU 节点报告
+- 必须明确 GPU 空闲数/总数
+- 必须明确 CPU 空闲数/总数
+- 有推荐时，给出最合适节点或分区
 
-使用 `status -p cpu` 或 `partition-info -p cpu` 后，按以下格式报告：
+### CPU / 分区报告
 
-```
-CPU 资源概览（分区 cpu）：
-节点 cpu-node01: 32/64 CPU 空闲，内存 45% 使用
-节点 cpu-node02: 0/48 CPU 空闲（已满），内存 98% 使用
-节点 cpu-node03: 16/32 CPU 空闲，内存 30% 使用
-
-总计：3 个节点，48/144 CPU 可用
-推荐：cpu-node01 有 32 核可用
+```text
+分区 cpu48c 概览：
+节点 cpu48c-01: 32/48 CPU 空闲，内存使用 41%
+节点 cpu48c-02: 0/48 CPU 空闲，内存使用 97%
 ```
 
-**说明：**
-- 明确说明空闲 CPU 数量/总数
-- 显示内存使用情况（如有）
-- 有可用资源时给出推荐
+### 节点作业报告
 
-### 节点状态报告
-
-使用 `partition-info` 后，按以下格式报告：
-
-```
-分区 gpu 状态：
-- 共 12 个节点
-- 8 个节点有空闲 GPU
-- 总计 15/48 张 GPU 可用
+```text
+节点 gpu-a10-01 上的作业：
+[RUNNING] 12345 training | qiandingh | 01:13:22
+[PENDING] 12352 debug | qiandingh | Priority
 ```
 
 ---
 
 ## 默认行为
 
-### 用户未指定具体查询内容
+### 用户表述模糊时
 
-当用户说"我的作业"、"看看资源"等模糊请求时：
+- “看看资源” -> `status --gpu`
+- “看看我的任务” -> `jobs`
+- “看看节点情况” -> `partition-info`
 
-1. **作业相关**：默认执行 `jobs` 查看当前作业
-2. **资源相关**：默认执行 `status --gpu` 查看 GPU 资源
-3. **CPU 资源**：执行 `status -p cpu` 查看 CPU 节点
+### 用户只说“报告一下”
 
-### 用户说"说明"或"报告"
+默认先做两项：
 
-当用户说"说明"、"报告"等，未指定内容时：
-
-1. 先询问用户想了解什么：
-
-```json
-{
-  "questions": [
-    {
-      "question": "请选择要查看的内容",
-      "options": [
-        "我的作业状态",
-        "GPU 资源情况",
-        "CPU 节点资源",
-        "节点和分区状态",
-        "作业历史",
-        "全部概览"
-      ]
-    }
-  ]
-}
-```
-
-2. 根据选择执行相应命令
-
----
-
-## 常见场景处理
-
-### 场景 1：用户问"我的作业怎么样了"
-
-```bash
-# 执行命令
-uv run python "$SCRIPT" jobs
-
-# 报告格式
-当前作业状态：
-[RUNNING] 作业ID 12345 - training | gpu-node01 | 运行 2小时30分
-```
-
-### 场景 2：用户问"有 GPU 吗"
-
-```bash
-# 执行命令
-uv run python "$SCRIPT" status --gpu
-
-# 报告格式
-GPU 资源概览：
-节点 gpu-node01: 2/4 张 A100 空闲，8/32 CPU 空闲
-推荐：gpu-node01 有 2 张 A100 可用
-```
-
-### 场景 3：用户问"队列情况"
-
-```bash
-# 执行命令
-uv run python "$SCRIPT" jobs
-
-# 报告格式
-队列情况：
-当前有 2 个作业在运行，1 个作业排队中
-[PENDING] 作业ID 12346 - inference | 预计等待时间约 10分钟
-```
-
-### 场景 4：用户问"CPU 节点有空吗"
-
-```bash
-# 执行命令
-uv run python "$SCRIPT" status -p cpu
-
-# 报告格式
-CPU 资源概览（分区 cpu）：
-节点 cpu-node01: 32/64 CPU 空闲，内存 45% 使用
-推荐：cpu-node01 有 32 核可用
-```
-
-### 场景 5：用户说"报告一下"
-
-先询问用户想了解什么，然后根据选择执行相应命令并报告。
+1. `jobs`
+2. `status --gpu`
 
 ---
 
 ## 输出要求总结
 
 - 不使用 emoji
-- 状态用文字（如 `[RUNNING]`、`[PENDING]`）
-- 表格简单对齐
-- GPU 节点信息必须明确说明空闲数量
-- CPU 节点信息必须明确说明空闲 CPU 数量/总数和内存使用情况
-- 有可用资源时给出推荐
+- 状态用文字，如 `[RUNNING]`
+- 优先给结论，不先贴大段原始输出
+- 当命令返回 JSON 时，回答里要做二次归纳，不能把原始 JSON 直接甩给用户
 
 ---
 
 ## 相关文档
 
-- `references/commands.md` - 命令详细用法
+- `references/commands.md`

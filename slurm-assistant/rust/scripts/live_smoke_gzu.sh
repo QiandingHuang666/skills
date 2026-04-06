@@ -40,7 +40,7 @@ run_client() {
 
 extract_json_field() {
   local path_expr="$1"
-  python3 -c 'import json,sys; data=json.load(sys.stdin); value=data'"${path_expr}"'; print(value if not isinstance(value, bool) else str(value).lower())'
+  jq -r "${path_expr}"
 }
 
 cd "${ROOT_DIR}"
@@ -66,7 +66,7 @@ run_client find-gpu a10 --connection "${CONNECTION_ID}" --json >/dev/null
 
 echo "[4/8] validating missing log contract"
 missing_log_json="$(run_client log 999999999 --connection "${CONNECTION_ID}" --json)"
-missing_found="$(printf '%s' "${missing_log_json}" | extract_json_field "['data']['found']")"
+missing_found="$(printf '%s' "${missing_log_json}" | extract_json_field '.data.found')"
 if [[ "${missing_found}" != "false" ]]; then
   echo "expected missing log to report found=false" >&2
   exit 1
@@ -91,7 +91,7 @@ sleep 30
 EOF" --json >/dev/null
 
 submit_json="$(run_client submit "${REMOTE_SCRIPT}" --connection "${CONNECTION_ID}" --json)"
-SMOKE_JOB_ID="$(printf '%s' "${submit_json}" | extract_json_field "['data']['job_id']")"
+SMOKE_JOB_ID="$(printf '%s' "${submit_json}" | extract_json_field '.data.job_id')"
 if [[ -z "${SMOKE_JOB_ID}" ]]; then
   echo "failed to capture smoke job id" >&2
   exit 1
@@ -101,7 +101,7 @@ echo "[7/8] release smoke job"
 run_client release "${SMOKE_JOB_ID}" --connection "${CONNECTION_ID}" --json >/dev/null
 sleep 3
 jobs_json="$(run_client jobs --connection "${CONNECTION_ID}" --job-id "${SMOKE_JOB_ID}" --json)"
-jobs_count="$(printf '%s' "${jobs_json}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["jobs"]))')"
+jobs_count="$(printf '%s' "${jobs_json}" | jq -r '.data.jobs | length')"
 if [[ "${jobs_count}" != "0" ]]; then
   echo "smoke job still visible after release" >&2
   exit 1
