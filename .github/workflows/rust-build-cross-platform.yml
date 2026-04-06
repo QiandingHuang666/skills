@@ -1,0 +1,62 @@
+name: rust-build-cross-platform
+
+on:
+  push:
+    paths:
+      - "slurm-assistant/rust/**"
+      - ".github/workflows/rust-build-cross-platform.yml"
+  pull_request:
+    paths:
+      - "slurm-assistant/rust/**"
+      - ".github/workflows/rust-build-cross-platform.yml"
+  workflow_dispatch:
+
+jobs:
+  build-binaries:
+    name: build-${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-amd64
+            runner: ubuntu-latest
+            artifact_name: slurm-assistant-linux-amd64
+            bin_ext: ""
+          - label: macos
+            runner: macos-latest
+            artifact_name: slurm-assistant-macos
+            bin_ext: ""
+          - label: windows-amd64
+            runner: windows-latest
+            artifact_name: slurm-assistant-windows-amd64
+            bin_ext: ".exe"
+
+    defaults:
+      run:
+        working-directory: slurm-assistant/rust
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release --bin slurm-client --bin slurm-server
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/release/slurm-client${{ matrix.bin_ext }}" dist/
+          cp "target/release/slurm-server${{ matrix.bin_ext }}" dist/
+
+      - name: Upload binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: slurm-assistant/rust/dist/*
+          if-no-files-found: error
