@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use reqwest::blocking::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
+use serde::Serialize;
 use slurm_proto::{
     ConnectionAddRequest, ConnectionDeleteData, ConnectionKind, ConnectionListData, ConnectionRecord,
     ExecRunData, ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest,
@@ -23,10 +24,57 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, Serialize)]
 struct AllocPlanOutput {
     command: String,
     execute: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct NodeInfoData {
+    node: String,
+    raw_output: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct NodeJobEntry {
+    job_id: String,
+    name: String,
+    user: String,
+    status: String,
+    time: String,
+    mem: String,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct NodeJobsData {
+    node: String,
+    running_jobs: Vec<NodeJobEntry>,
+    pending_jobs: Vec<NodeJobEntry>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct PartitionNodeInfo {
+    node: String,
+    cpu_idle: u32,
+    cpu_total: u32,
+    jobs: u32,
+    mem: String,
+    gpu_idle: u32,
+    gpu_total: u32,
+    gpu_type: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct PartitionInfoSection {
+    partition: String,
+    gpu_nodes: Vec<PartitionNodeInfo>,
+    cpu_nodes: Vec<PartitionNodeInfo>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct PartitionInfoData {
+    partitions: Vec<PartitionInfoSection>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -39,6 +87,9 @@ enum Command {
     FindGpu(FindGpuCommand),
     Jobs(JobsCommand),
     Log(LogCommand),
+    NodeInfo(NodeInfoCommand),
+    NodeJobs(NodeJobsCommand),
+    PartitionInfo(PartitionInfoCommand),
     Release(ReleaseCommand),
     Run(RunCommand),
     Status(StatusCommand),
@@ -161,6 +212,34 @@ struct JobsCommand {
 #[derive(Debug, Args)]
 struct LogCommand {
     job_id: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct NodeInfoCommand {
+    node: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct NodeJobsCommand {
+    node: String,
+    #[arg(long = "connection")]
+    connection_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+struct PartitionInfoCommand {
+    #[arg(short = 'p', long = "partition")]
+    partition: Option<String>,
     #[arg(long = "connection")]
     connection_id: String,
     #[arg(long)]
@@ -496,6 +575,36 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Command::NodeInfo(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = node_info_query(&runtime, &cmd.connection_id, &cmd.node)?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                print!("{}", payload.raw_output);
+                if !payload.raw_output.ends_with('\n') {
+                    println!();
+                }
+            }
+        }
+        Command::NodeJobs(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = node_jobs_query(&runtime, &cmd.connection_id, &cmd.node)?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                print_node_jobs_text(&payload);
+            }
+        }
+        Command::PartitionInfo(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let payload = partition_info_query(&runtime, &cmd.connection_id, cmd.partition.as_deref())?;
+            if cmd.json {
+                println!("{}", serde_json::to_string_pretty(&payload)?);
+            } else {
+                print_partition_info_text(&payload);
+            }
+        }
         Command::Release(cmd) => {
             let runtime = read_runtime_file(&runtime_file_path()?)?;
             let payload = cancel_query(
@@ -828,6 +937,112 @@ fn find_gpu_query(
     )
 }
 
+fn node_info_query(runtime: &RuntimeFile, connection_id: &str, node: &str) -> Result<NodeInfoData> {
+    let payload = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: format!("scontrol show node {node}"),
+            timeout_secs: 30,
+        },
+    )?;
+    if payload.data.exit_code != 0 {
+        bail!("node-info command failed: {}", payload.data.stderr.trim());
+    }
+    Ok(NodeInfoData {
+        node: node.to_string(),
+        raw_output: payload.data.stdout,
+    })
+}
+
+fn node_jobs_query(runtime: &RuntimeFile, connection_id: &str, node: &str) -> Result<NodeJobsData> {
+    let running = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: format!("squeue -w {node} -t RUNNING -h -o '%i|%j|%u|%T|%M|%m'"),
+            timeout_secs: 30,
+        },
+    )?;
+    if running.data.exit_code != 0 {
+        bail!("node-jobs running query failed: {}", running.data.stderr.trim());
+    }
+
+    let pending = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: "squeue -t PENDING -h -o '%i|%j|%u|%T|%M|%P|%m'".to_string(),
+            timeout_secs: 30,
+        },
+    )?;
+    if pending.data.exit_code != 0 {
+        bail!("node-jobs pending query failed: {}", pending.data.stderr.trim());
+    }
+
+    let node_partitions = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: format!("sinfo -N -n {node} -h -o '%P'"),
+            timeout_secs: 30,
+        },
+    )?;
+    if node_partitions.data.exit_code != 0 {
+        bail!("node-jobs partition query failed: {}", node_partitions.data.stderr.trim());
+    }
+
+    Ok(NodeJobsData {
+        node: node.to_string(),
+        running_jobs: parse_node_running_jobs(&running.data.stdout)?,
+        pending_jobs: parse_node_pending_jobs(&pending.data.stdout, &node_partitions.data.stdout)?,
+    })
+}
+
+fn partition_info_query(
+    runtime: &RuntimeFile,
+    connection_id: &str,
+    partition: Option<&str>,
+) -> Result<PartitionInfoData> {
+    let (nodes_command, jobs_command) = if let Some(partition) = partition {
+        (
+            format!("sinfo -p {partition} -N -h -o '%N|%C|%G|%m'"),
+            format!("squeue -p {partition} -t RUNNING -h -o '%i|%N|%b|%M'"),
+        )
+    } else {
+        (
+            "sinfo -N -h -o '%N|%P|%C|%G|%m'".to_string(),
+            "squeue -t RUNNING -h -o '%i|%N|%b|%M'".to_string(),
+        )
+    };
+
+    let nodes = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: nodes_command,
+            timeout_secs: 30,
+        },
+    )?;
+    if nodes.data.exit_code != 0 {
+        bail!("partition-info node query failed: {}", nodes.data.stderr.trim());
+    }
+
+    let jobs = exec_run(
+        runtime,
+        &ExecRunRequest {
+            connection_id: connection_id.to_string(),
+            command: jobs_command,
+            timeout_secs: 30,
+        },
+    )?;
+    if jobs.data.exit_code != 0 {
+        bail!("partition-info jobs query failed: {}", jobs.data.stderr.trim());
+    }
+
+    parse_partition_info(&nodes.data.stdout, &jobs.data.stdout, partition)
+}
+
 fn http_client() -> Client {
     let client = Client::new();
     client
@@ -956,6 +1171,252 @@ fn print_connection_detail(connection: &ConnectionRecord) {
         "  jump_host: {}",
         connection.jump_host.as_deref().unwrap_or("-")
     );
+}
+
+fn parse_cpu_alloc(alloc: &str) -> (u32, u32, u32, u32) {
+    let parts: Vec<&str> = alloc.split('/').collect();
+    if parts.len() != 4 {
+        return (0, 0, 0, 0);
+    }
+    (
+        parts[0].parse().unwrap_or(0),
+        parts[1].parse().unwrap_or(0),
+        parts[2].parse().unwrap_or(0),
+        parts[3].parse().unwrap_or(0),
+    )
+}
+
+fn parse_gpu_gres_local(gres: &str) -> (u32, Option<String>) {
+    let lower = gres.to_ascii_lowercase();
+    if let Some(captures) = regex::Regex::new(r"gpu:([a-zA-Z_]\w*):(\d+)")
+        .ok()
+        .and_then(|re| re.captures(&lower))
+    {
+        return (
+            captures.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
+            captures.get(1).map(|m| m.as_str().to_ascii_uppercase()),
+        );
+    }
+    if let Some(captures) = regex::Regex::new(r"gpu:(\d+)")
+        .ok()
+        .and_then(|re| re.captures(&lower))
+    {
+        return (
+            captures.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
+            Some("UNKNOWN".to_string()),
+        );
+    }
+    (0, None)
+}
+
+fn parse_node_running_jobs(stdout: &str) -> Result<Vec<NodeJobEntry>> {
+    let mut jobs = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 6 {
+            bail!("failed to parse running node-jobs row: {line}");
+        }
+        jobs.push(NodeJobEntry {
+            job_id: parts[0].to_string(),
+            name: parts[1].to_string(),
+            user: parts[2].to_string(),
+            status: parts[3].to_string(),
+            time: parts[4].to_string(),
+            mem: parts[5].to_string(),
+        });
+    }
+    Ok(jobs)
+}
+
+fn parse_node_pending_jobs(stdout: &str, partitions_stdout: &str) -> Result<Vec<NodeJobEntry>> {
+    let partitions: Vec<&str> = partitions_stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let mut jobs = Vec::new();
+    for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 7 {
+            bail!("failed to parse pending node-jobs row: {line}");
+        }
+        if partitions.iter().any(|partition| partition == &parts[5]) {
+            jobs.push(NodeJobEntry {
+                job_id: parts[0].to_string(),
+                name: parts[1].to_string(),
+                user: parts[2].to_string(),
+                status: parts[3].to_string(),
+                time: parts[4].to_string(),
+                mem: parts[6].to_string(),
+            });
+        }
+    }
+    Ok(jobs)
+}
+
+fn parse_partition_info(
+    nodes_stdout: &str,
+    jobs_stdout: &str,
+    fixed_partition: Option<&str>,
+) -> Result<PartitionInfoData> {
+    use std::collections::BTreeMap;
+
+    let mut partitions: BTreeMap<String, BTreeMap<String, PartitionNodeInfo>> = BTreeMap::new();
+    for line in nodes_stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('|').collect();
+        let (node, partition, cpu, gres, mem) = if let Some(fixed_partition) = fixed_partition {
+            if parts.len() < 4 {
+                bail!("failed to parse partition node row: {line}");
+            }
+            (parts[0], fixed_partition, parts[1], parts[2], parts[3])
+        } else {
+            if parts.len() < 5 {
+                bail!("failed to parse partition node row: {line}");
+            }
+            (parts[0], parts[1], parts[2], parts[3], parts[4])
+        };
+        let (_, cpu_idle, _, cpu_total) = parse_cpu_alloc(cpu);
+        let (gpu_total, gpu_type) = parse_gpu_gres_local(gres);
+        partitions
+            .entry(partition.to_string())
+            .or_default()
+            .insert(
+                node.to_string(),
+                PartitionNodeInfo {
+                    node: node.to_string(),
+                    cpu_idle,
+                    cpu_total,
+                    jobs: 0,
+                    mem: mem.to_string(),
+                    gpu_idle: gpu_total,
+                    gpu_total,
+                    gpu_type,
+                },
+            );
+    }
+
+    for line in jobs_stdout.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('|').collect();
+        if parts.len() < 4 {
+            bail!("failed to parse partition jobs row: {line}");
+        }
+        let node_list = parts[1];
+        let gres = parts[2].to_ascii_lowercase();
+        let used_gpu = regex::Regex::new(r"gpu:\w*:?(\d+)")
+            .ok()
+            .and_then(|re| re.captures(&gres))
+            .and_then(|captures| captures.get(1))
+            .and_then(|value| value.as_str().parse::<u32>().ok())
+            .unwrap_or(0);
+        for node in node_list.split(',').map(str::trim).filter(|node| !node.is_empty()) {
+            for nodes in partitions.values_mut() {
+                if let Some(info) = nodes.get_mut(node) {
+                    info.jobs += 1;
+                    info.gpu_idle = info.gpu_total.saturating_sub(used_gpu.min(info.gpu_total));
+                }
+            }
+        }
+    }
+
+    Ok(PartitionInfoData {
+        partitions: partitions
+            .into_iter()
+            .map(|(partition, nodes)| {
+                let mut gpu_nodes = Vec::new();
+                let mut cpu_nodes = Vec::new();
+                for (_, node) in nodes {
+                    if node.gpu_total > 0 {
+                        gpu_nodes.push(node);
+                    } else {
+                        cpu_nodes.push(node);
+                    }
+                }
+                gpu_nodes.sort_by(|a, b| a.node.cmp(&b.node));
+                cpu_nodes.sort_by(|a, b| a.node.cmp(&b.node));
+                PartitionInfoSection {
+                    partition,
+                    gpu_nodes,
+                    cpu_nodes,
+                }
+            })
+            .collect(),
+    })
+}
+
+fn print_node_jobs_text(data: &NodeJobsData) {
+    println!("Node: {}", data.node);
+    println!();
+    println!("[RUNNING] Running jobs ({})", data.running_jobs.len());
+    if data.running_jobs.is_empty() {
+        println!("  None");
+    } else {
+        println!("{:<10} {:<25} {:<12} {:<12} {}", "JOBID", "Name", "User", "Runtime", "Memory");
+        for job in &data.running_jobs {
+            println!(
+                "{:<10} {:<25} {:<12} {:<12} {}",
+                job.job_id,
+                truncate_for_table(&job.name, 25),
+                truncate_for_table(&job.user, 12),
+                truncate_for_table(&job.time, 12),
+                job.mem
+            );
+        }
+    }
+    println!();
+    println!("[PENDING] Pending jobs ({})", data.pending_jobs.len());
+    if data.pending_jobs.is_empty() {
+        println!("  None");
+    } else {
+        println!("{:<10} {:<25} {:<12} {:<12} {}", "JOBID", "Name", "User", "WaitTime", "Memory");
+        for job in &data.pending_jobs {
+            println!(
+                "{:<10} {:<25} {:<12} {:<12} {}",
+                job.job_id,
+                truncate_for_table(&job.name, 25),
+                truncate_for_table(&job.user, 12),
+                truncate_for_table(&job.time, 12),
+                job.mem
+            );
+        }
+    }
+}
+
+fn print_partition_info_text(data: &PartitionInfoData) {
+    for section in &data.partitions {
+        println!("============================================================");
+        println!("Partition: {}", section.partition);
+        println!("============================================================");
+        if !section.gpu_nodes.is_empty() {
+            println!();
+            println!("[GPU Nodes] ({})", section.gpu_nodes.len());
+            println!("{:<18} {:<14} {:<14} {:<8} {}", "Node", "GPU Idle/Total", "CPU Idle/Total", "Jobs", "Memory");
+            for node in &section.gpu_nodes {
+                println!(
+                    "{:<18} {:<14} {:<14} {:<8} {}",
+                    truncate_for_table(&node.node, 18),
+                    format!("{}/{}", node.gpu_idle, node.gpu_total),
+                    format!("{}/{}", node.cpu_idle, node.cpu_total),
+                    node.jobs,
+                    node.mem
+                );
+            }
+        }
+        if !section.cpu_nodes.is_empty() {
+            println!();
+            println!("[CPU Nodes] ({})", section.cpu_nodes.len());
+            println!("{:<18} {:<14} {:<8} {}", "Node", "CPU Idle/Total", "Jobs", "Memory");
+            for node in &section.cpu_nodes {
+                println!(
+                    "{:<18} {:<14} {:<8} {}",
+                    truncate_for_table(&node.node, 18),
+                    format!("{}/{}", node.cpu_idle, node.cpu_total),
+                    node.jobs,
+                    node.mem
+                );
+            }
+        }
+        println!();
+    }
 }
 
 fn build_salloc_command(
@@ -1157,5 +1618,31 @@ mod tests {
             command,
             "srun -p gpu-a10 --gres=gpu:1 --cpus-per-task=8 --time=01:00:00 --mem=32G -w gpu-a10-7 python train.py"
         );
+    }
+
+    #[test]
+    fn parse_node_running_jobs_decodes_rows() {
+        let jobs = parse_node_running_jobs("123|train|alice|RUNNING|00:12|8G\n").unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].job_id, "123");
+        assert_eq!(jobs[0].mem, "8G");
+    }
+
+    #[test]
+    fn parse_partition_info_groups_gpu_and_cpu_nodes() {
+        let nodes = "\
+gpu-a10-1|gpu-a10|28/20/0/48|gpu:a10:2|128000\n\
+cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
+        let jobs = "9001|gpu-a10-1|gpu:1|00:10\n";
+        let parsed = parse_partition_info(nodes, jobs, None).unwrap();
+        assert_eq!(parsed.partitions.len(), 2);
+        assert_eq!(parsed.partitions[0].gpu_nodes.len() + parsed.partitions[0].cpu_nodes.len(), 1);
+        let gpu_section = parsed
+            .partitions
+            .iter()
+            .find(|section| section.partition == "gpu-a10")
+            .unwrap();
+        assert_eq!(gpu_section.gpu_nodes[0].gpu_idle, 1);
+        assert_eq!(gpu_section.gpu_nodes[0].jobs, 1);
     }
 }
