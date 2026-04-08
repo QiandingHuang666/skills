@@ -30,37 +30,37 @@
 ### 作业状态
 
 ```bash
-cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
+slurm-client jobs --connection <connection_id> --json
 ```
 
 ### GPU 资源
 
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
+slurm-client status --connection <connection_id> --gpu --json
 ```
 
 或：
 
 ```bash
-cargo run --quiet --bin slurm-client -- find-gpu a10 --connection <connection_id> --json
+slurm-client find-gpu a10 --connection <connection_id> --json
 ```
 
 ### 分区状态
 
 ```bash
-cargo run --quiet --bin slurm-client -- partition-info --connection <connection_id> -p cpu48c --json
+slurm-client partition-info --connection <connection_id> -p cpu48c --json
 ```
 
 ### 节点详情
 
 ```bash
-cargo run --quiet --bin slurm-client -- node-info gpu-a10-01 --connection <connection_id> --json
+slurm-client node-info gpu-a10-01 --connection <connection_id> --json
 ```
 
 ### 节点作业
 
 ```bash
-cargo run --quiet --bin slurm-client -- node-jobs gpu-a10-01 --connection <connection_id> --json
+slurm-client node-jobs gpu-a10-01 --connection <connection_id> --json
 ```
 
 ---

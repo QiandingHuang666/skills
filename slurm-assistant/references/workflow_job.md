@@ -156,7 +156,7 @@ echo "Job completed at: $(date)"
 如果用户选择立即提交，执行：
 
 ```bash
-cargo run --quiet --bin slurm-client -- submit --connection <connection_id> script.sh
+slurm-client submit --connection <connection_id> script.sh
 ```
 
 ---

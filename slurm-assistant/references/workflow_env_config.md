@@ -29,22 +29,22 @@
 
 ```bash
 # 检查节点 CUDA 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
+slurm-client exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
 
 # 检查 CUDA 运行时库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvcc --version"
+slurm-client exec --connection <connection_id> --cmd "nvcc --version"
 
 # 检查用户可用的 Python 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "python --version"
+slurm-client exec --connection <connection_id> --cmd "python --version"
 
 # 检查编译器
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "gcc --version"
+slurm-client exec --connection <connection_id> --cmd "gcc --version"
 
 # 检查 conda 是否可用
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "which conda"
+slurm-client exec --connection <connection_id> --cmd "which conda"
 
 # 检查 uv 是否可用
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "which uv"
+slurm-client exec --connection <connection_id> --cmd "which uv"
 ```
 
 ### 第二步：询问项目需求
@@ -90,16 +90,16 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 1. 创建项目目录
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "mkdir -p ~/project && cd ~/project"
+slurm-client exec --connection <connection_id> --cmd "mkdir -p ~/project && cd ~/project"
 
 # 2. 使用 uv 初始化项目
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv venv"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv venv"
 
 # 3. 安装 PyTorch（使用预编译版，自动检测节点 CUDA）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv pip install torch torchvision"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv pip install torch torchvision"
 
 # 4. 验证 CUDA 可用
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")'"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")'"
 ```
 
 **作业脚本：**
@@ -121,18 +121,18 @@ uv run python train.py
 
 ```bash
 # 1. 配置 conda 通道（重要！）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels nvidia"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels pytorch"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels nvidia"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels pytorch"
+slurm-client exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
 
 # 2. 创建 conda 环境并安装 CUDA toolkit
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda create -n myproject python=3.10 cuda-toolkit=11.8 -c nvidia -y"
+slurm-client exec --connection <connection_id> --cmd "conda create -n myproject python=3.10 cuda-toolkit=11.8 -c nvidia -y"
 
 # 3. 配置环境变量（见下方"conda 环境配置细节"）
 
 # 4. 使用 uv 安装 Python 包（匹配 CUDA 版本）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myproject && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
+slurm-client exec --connection <connection_id> --cmd "conda activate myproject && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
 ```
 
 ---
@@ -147,15 +147,15 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 1. 设置优先级通道（按优先级排序）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels nvidia"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels pytorch"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels nvidia"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels pytorch"
 
 # 2. 设置通道优先级（conda-forge 最高）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
+slurm-client exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
 
 # 3. 验证通道配置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --show channels"
+slurm-client exec --connection <connection_id> --cmd "conda config --show channels"
 ```
 
 **第二步：安装 CUDA toolkit**
@@ -163,96 +163,96 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 ```bash
 # 方案 A：安装完整 CUDA toolkit（推荐，包含 nvcc）
 # 使用 nvidia 通道
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-toolkit=11.8 -c nvidia -y"
+slurm-client exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-toolkit=11.8 -c nvidia -y"
 
 # 方案 B：安装 cuda-runtime（轻量，不含 nvcc）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-runtime=11.8 -c nvidia -y"
+slurm-client exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-runtime=11.8 -c nvidia -y"
 
 # 方案 C：使用 conda-forge（可能有更好的兼容性）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-toolkit=11.8 -c conda-forge -y"
+slurm-client exec --connection <connection_id> --cmd "conda create -n myenv python=3.10 cuda-toolkit=11.8 -c conda-forge -y"
 ```
 
 **第三步：配置环境变量**
 
 ```bash
 # 1. 激活 conda 环境
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "source ~/.bashrc && conda activate myenv"
+slurm-client exec --connection <connection_id> --cmd "source ~/.bashrc && conda activate myenv"
 
 # 2. 设置 CUDA_HOME
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export CUDA_HOME=\$CONDA_PREFIX"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export CUDA_HOME=\$CONDA_PREFIX"
 
 # 3. 添加 nvcc 到 PATH
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export PATH=\$CUDA_HOME/bin:\$PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export PATH=\$CUDA_HOME/bin:\$PATH"
 
 # 4. 设置动态链接库路径
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH"
 
 # 5. 持久化配置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export CUDA_HOME=\$CONDA_PREFIX' >> ~/.bashrc"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export PATH=\$CUDA_HOME/bin:\$PATH' >> ~/.bashrc"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export CUDA_HOME=\$CONDA_PREFIX' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export PATH=\$CUDA_HOME/bin:\$PATH' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
 ```
 
 **第四步：验证 CUDA 配置**
 
 ```bash
 # 1. 验证 CUDA_HOME
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && echo \$CUDA_HOME"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && echo \$CUDA_HOME"
 
 # 2. 验证 nvcc
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && which nvcc"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && nvcc --version"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && which nvcc"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && nvcc --version"
 
 # 3. 验证 CUDA 运行时库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")'"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}\")'"
 
 # 4. 验证动态链接库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so | grep cuda"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so | grep cuda"
 ```
 
 ### 动态链接库配置
 
 ```bash
 # 1. 查找 conda 环境中的 CUDA 库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && find \$CONDA_PREFIX -name 'libcudart.so*'"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && find \$CONDA_PREFIX -name 'libcudart.so*'"
 
 # 2. 列出所有可能的库路径
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && ls -la \$CONDA_PREFIX/lib/ | grep cuda"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && ls -la \$CONDA_PREFIX/lib/ | grep cuda"
 
 # 3. 添加所有相关路径到 LD_LIBRARY_PATH
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$CONDA_PREFIX/lib/python3.*/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$CONDA_PREFIX/lib/python3.*/site-packages/nvidia/cuda_runtime/lib:\$LD_LIBRARY_PATH"
 
 # 4. 持久化配置（在 ~/.bashrc 中添加）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CONDA_PREFIX/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
 
 # 5. 验证库可被找到
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so | grep 'not found'"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so | grep 'not found'"
 ```
 
 **如果库仍然找不到：**
 
 ```bash
 # 1. 检查具体缺少哪个库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && python -c 'import torch; torch.cuda.is_available()'"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && python -c 'import torch; torch.cuda.is_available()'"
 
 # 2. 查找该库在 conda 环境中的位置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && find \$CONDA_PREFIX -name '缺失的库名.so*'"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && find \$CONDA_PREFIX -name '缺失的库名.so*'"
 
 # 3. 将该库所在目录添加到 LD_LIBRARY_PATH
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$(dirname \$(find \$CONDA_PREFIX -name '缺失的库名.so*')):\$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export LD_LIBRARY_PATH=\$(dirname \$(find \$CONDA_PREFIX -name '缺失的库名.so*')):\$LD_LIBRARY_PATH"
 ```
 
 ### 编译器配置
 
 ```bash
 # 1. 安装特定版本的 gcc
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda install -n myenv gcc_linux-64=9 -c conda-forge"
+slurm-client exec --connection <connection_id> --cmd "conda install -n myenv gcc_linux-64=9 -c conda-forge"
 
 # 2. 验证编译器
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && gcc --version"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && gcc --version"
 
 # 3. 配置编译器路径
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && export CC=\$CONDA_PREFIX/bin/gcc"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && export CC=\$CONDA_PREFIX/bin/gcc"
 ```
 
 ### 完整配置脚本
@@ -337,10 +337,10 @@ echo "配置完成！请运行 'source ~/.bashrc' 使配置生效。"
 **安装 uv：**
 ```bash
 # 官方安装脚本（推荐）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "curl -LsSf https://astral.sh/uv/install.sh | sh"
+slurm-client exec --connection <connection_id> --cmd "curl -LsSf https://astral.sh/uv/install.sh | sh"
 
 # 安装后验证
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "source ~/.bashrc && uv --version"
+slurm-client exec --connection <connection_id> --cmd "source ~/.bashrc && uv --version"
 ```
 
 ### conda 缺失
@@ -360,11 +360,11 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 安装 Miniconda
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "bash ~/miniconda.sh -b -p ~/miniconda"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "rm ~/miniconda.sh"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "~/miniconda/bin/conda init bash"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "source ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda.sh"
+slurm-client exec --connection <connection_id> --cmd "bash ~/miniconda.sh -b -p ~/miniconda"
+slurm-client exec --connection <connection_id> --cmd "rm ~/miniconda.sh"
+slurm-client exec --connection <connection_id> --cmd "~/miniconda/bin/conda init bash"
+slurm-client exec --connection <connection_id> --cmd "source ~/.bashrc"
 ```
 
 ---
@@ -375,15 +375,15 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 1. 检查节点 CUDA 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
+slurm-client exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
 # 输出：CUDA Version: 12.2
 
 # 2. 用户接受使用节点 CUDA，使用 uv 配置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "mkdir -p ~/project && cd ~/project && uv venv"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
+slurm-client exec --connection <connection_id> --cmd "mkdir -p ~/project && cd ~/project && uv venv"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121"
 
 # 3. 验证
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(torch.cuda.is_available())'"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(torch.cuda.is_available())'"
 ```
 
 ### 场景 2：需要特定 CUDA 版本
@@ -392,53 +392,53 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 1. 检查节点 CUDA
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
+slurm-client exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
 # 输出：CUDA Version: 12.2
 
 # 2. 配置 conda 通道
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels nvidia"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --add channels pytorch"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels conda-forge"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels nvidia"
+slurm-client exec --connection <connection_id> --cmd "conda config --add channels pytorch"
+slurm-client exec --connection <connection_id> --cmd "conda config --set channel_priority strict"
 
 # 3. 需要使用 conda
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda create -n cuda118 python=3.10 cuda-toolkit=11.8 -c nvidia -y"
+slurm-client exec --connection <connection_id> --cmd "conda create -n cuda118 python=3.10 cuda-toolkit=11.8 -c nvidia -y"
 
 # 4. 配置环境
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && export CUDA_HOME=\$CONDA_PREFIX"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && export PATH=\$CUDA_HOME/bin:\$PATH"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && export CUDA_HOME=\$CONDA_PREFIX"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && export PATH=\$CUDA_HOME/bin:\$PATH"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH"
 
 # 5. 持久化配置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export CUDA_HOME=\$CONDA_PREFIX' >> ~/.bashrc"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export PATH=\$CUDA_HOME/bin:\$PATH' >> ~/.bashrc"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export CUDA_HOME=\$CONDA_PREFIX' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export PATH=\$CUDA_HOME/bin:\$PATH' >> ~/.bashrc"
+slurm-client exec --connection <connection_id> --cmd "echo 'export LD_LIBRARY_PATH=\$CUDA_HOME/lib:\$LD_LIBRARY_PATH' >> ~/.bashrc"
 
 # 6. 安装 PyTorch
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118"
 
 # 7. 验证
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && nvcc --version"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate cuda118 && python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}, Version: {torch.version.cuda}\")'"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && nvcc --version"
+slurm-client exec --connection <connection_id> --cmd "conda activate cuda118 && python -c 'import torch; print(f\"CUDA available: {torch.cuda.is_available()}, Version: {torch.version.cuda}\")'"
 ```
 
 ### 场景 3：克隆已有项目
 
 ```bash
 # 1. 克隆项目
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "git clone https://github.com/user/repo ~/repo"
+slurm-client exec --connection <connection_id> --cmd "git clone https://github.com/user/repo ~/repo"
 
 # 2. 检查依赖文件
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cat ~/repo/requirements.txt"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cat ~/repo/environment.yml"
+slurm-client exec --connection <connection_id> --cmd "cat ~/repo/requirements.txt"
+slurm-client exec --connection <connection_id> --cmd "cat ~/repo/environment.yml"
 
 # 3. 如果有 environment.yml，检查是否需要特殊 CUDA/编译器
 #    如果不需要特殊版本，只用 uv 即可
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/repo && uv venv"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/repo && uv pip install -r requirements.txt"
+slurm-client exec --connection <connection_id> --cmd "cd ~/repo && uv venv"
+slurm-client exec --connection <connection_id> --cmd "cd ~/repo && uv pip install -r requirements.txt"
 
 # 4. 如果有 environment.yml 且需要特殊版本，使用 conda
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda env create -f ~/repo/environment.yml"
+slurm-client exec --connection <connection_id> --cmd "conda env create -f ~/repo/environment.yml"
 ```
 
 ---
@@ -449,33 +449,33 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 1. Python 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv run python --version"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv run python --version"
 
 # 2. 包列表
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv pip list"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv pip list"
 
 # 3. CUDA 可用性（深度学习）
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(f\"CUDA: {torch.cuda.is_available()}, Version: {torch.version.cuda}\")'"
+slurm-client exec --connection <connection_id> --cmd "cd ~/project && uv run python -c 'import torch; print(f\"CUDA: {torch.cuda.is_available()}, Version: {torch.version.cuda}\")'"
 
 # 4. 验证使用的是节点 CUDA
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvidia-smi --query-gpu=driver_version,cuda_version --format=csv"
+slurm-client exec --connection <connection_id> --cmd "nvidia-smi --query-gpu=driver_version,cuda_version --format=csv"
 ```
 
 ### conda 环境
 
 ```bash
 # 1. Python 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && python --version"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && python --version"
 
 # 2. CUDA 配置
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && echo \$CUDA_HOME"
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && nvcc --version"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && echo \$CUDA_HOME"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && nvcc --version"
 
 # 3. 动态链接库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && ldd \$CONDA_PREFIX/lib/python3.*/site-packages/torch/lib/libtorch_cuda.so"
 
 # 4. 包列表
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "conda activate myenv && uv pip list"
+slurm-client exec --connection <connection_id> --cmd "conda activate myenv && uv pip list"
 ```
 
 ---
@@ -486,10 +486,10 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 检查节点 CUDA 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
+slurm-client exec --connection <connection_id> --cmd "nvidia-smi | grep 'CUDA Version'"
 
 # 检查 PyTorch 编译的 CUDA 版本
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "python -c 'import torch; print(torch.version.cuda)'"
+slurm-client exec --connection <connection_id> --cmd "python -c 'import torch; print(torch.version.cuda)'"
 
 # 解决方案：使用匹配的 PyTorch 版本或使用 conda 安装特定 CUDA
 ```
@@ -498,26 +498,26 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 
 ```bash
 # 检查 LD_LIBRARY_PATH
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo \$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "echo \$LD_LIBRARY_PATH"
 
 # 查找缺失的库
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "find ~ -name 'libcudart.so*'"
+slurm-client exec --connection <connection_id> --cmd "find ~ -name 'libcudart.so*'"
 
 # 添加路径
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "export LD_LIBRARY_PATH=/path/to/cuda/lib:\$LD_LIBRARY_PATH"
+slurm-client exec --connection <connection_id> --cmd "export LD_LIBRARY_PATH=/path/to/cuda/lib:\$LD_LIBRARY_PATH"
 ```
 
 ### 问题 3：nvcc 未找到
 
 ```bash
 # 检查 CUDA_HOME
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "echo \$CUDA_HOME"
+slurm-client exec --connection <connection_id> --cmd "echo \$CUDA_HOME"
 
 # 设置 CUDA_HOME
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "export CUDA_HOME=/path/to/cuda"
+slurm-client exec --connection <connection_id> --cmd "export CUDA_HOME=/path/to/cuda"
 
 # 添加到 PATH
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "export PATH=\$CUDA_HOME/bin:\$PATH"
+slurm-client exec --connection <connection_id> --cmd "export PATH=\$CUDA_HOME/bin:\$PATH"
 ```
 
 ---

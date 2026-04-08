@@ -7,13 +7,13 @@
 ## 1. 会话开始：先看本机 server
 
 ```bash
-cargo run --quiet --bin slurm-client -- server status --json
+slurm-client server status --json
 ```
 
 如果失败，先在与 client 同机的位置启动：
 
 ```bash
-cargo run --quiet --bin slurm-server -- serve
+slurm-server serve
 ```
 
 然后重试 `server status`。
@@ -25,7 +25,7 @@ cargo run --quiet --bin slurm-server -- serve
 先列连接：
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection list --json
+slurm-client connection list --json
 ```
 
 只看：
@@ -48,26 +48,26 @@ cargo run --quiet --bin slurm-client -- connection list --json
 ### 资源查看
 
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
-cargo run --quiet --bin slurm-client -- find-gpu --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- partition-info --connection <connection_id> --json
+slurm-client status --connection <connection_id> --gpu --json
+slurm-client find-gpu --connection <connection_id> --json
+slurm-client partition-info --connection <connection_id> --json
 ```
 
 ### 作业管理
 
 ```bash
-cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- submit --connection <connection_id> <script>
-cargo run --quiet --bin slurm-client -- log <job_id> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- cancel <job_id> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- alloc --connection <connection_id> -p <partition> [-g gpu:1] --json
+slurm-client jobs --connection <connection_id> --json
+slurm-client submit --connection <connection_id> <script>
+slurm-client log <job_id> --connection <connection_id> --json
+slurm-client cancel <job_id> --connection <connection_id> --json
+slurm-client alloc --connection <connection_id> -p <partition> [-g gpu:1] --json
 ```
 
 ### 文件传输
 
 ```bash
-cargo run --quiet --bin slurm-client -- upload <local> <remote> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- download <remote> <local> --connection <connection_id> --json
+slurm-client upload <local> <remote> --connection <connection_id> --json
+slurm-client download <remote> <local> --connection <connection_id> --json
 ```
 
 ### 环境配置
@@ -77,13 +77,13 @@ cargo run --quiet --bin slurm-client -- download <remote> <local> --connection <
 ### 多连接 / 实例
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection list --json
+slurm-client connection list --json
 ```
 
 ### 任意远程命令
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd '<cmd>' --json
+slurm-client exec --connection <connection_id> --cmd '<cmd>' --json
 ```
 
 只在现有子命令不够用时使用。

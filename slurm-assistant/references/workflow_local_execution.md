@@ -19,15 +19,13 @@
 启动本机 server：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-server -- serve
+slurm-server serve
 ```
 
 创建本地连接：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection add --label local-cluster --kind local --json
+slurm-client connection add --label local-cluster --kind local --json
 ```
 
 ---
@@ -37,9 +35,9 @@ cargo run --quiet --bin slurm-client -- connection add --label local-cluster --k
 ### 1. 优先仍用 slurm-client
 
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
-cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- submit --connection <connection_id> job.sh --json
+slurm-client status --connection <connection_id> --gpu --json
+slurm-client jobs --connection <connection_id> --json
+slurm-client submit --connection <connection_id> job.sh --json
 ```
 
 只有在 `slurm-client` 尚未覆盖的细节上，才考虑直接使用原生命令。
@@ -71,13 +69,13 @@ cargo run --quiet --bin slurm-client -- submit --connection <connection_id> job.
 ### 用户在集群上查看 GPU
 
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
+slurm-client status --connection <connection_id> --gpu --json
 ```
 
 ### 用户在集群上提交作业
 
 ```bash
-cargo run --quiet --bin slurm-client -- submit --connection <connection_id> job.sh --json
+slurm-client submit --connection <connection_id> job.sh --json
 ```
 
 ### 用户在集群上复制文件

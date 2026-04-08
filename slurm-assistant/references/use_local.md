@@ -22,7 +22,7 @@
 ## 保存配置
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label "名称" \
   --kind local \
   --json

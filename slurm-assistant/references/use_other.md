@@ -73,7 +73,7 @@
 ### 4. 保存配置
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label "用户输入的名称" \
   --host "用户输入的地址" \
   --port 用户输入的端口 \

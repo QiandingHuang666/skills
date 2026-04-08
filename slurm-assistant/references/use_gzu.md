@@ -49,7 +49,7 @@
 连接创建时直接使用 Rust client：
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label gzu-cluster \
   --host 210.40.56.85 \
   --port 21563 \

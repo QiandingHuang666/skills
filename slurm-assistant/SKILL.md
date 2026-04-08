@@ -27,8 +27,7 @@ description: |
 使用：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- --help
+slurm-client --help
 ```
 
 禁止把 Python CLI 当作默认入口。当前 skill 的主链路只应使用 Rust server/client。
@@ -38,15 +37,13 @@ cargo run --quiet --bin slurm-client -- --help
 每次会话开始先执行：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- server status --json
+slurm-client server status --json
 ```
 
 如果失败，先在与 client 同机处启动：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-server -- serve
+slurm-server serve
 ```
 
 然后重试 `server status`。
@@ -54,8 +51,7 @@ cargo run --quiet --bin slurm-server -- serve
 ### Step 2：检查连接
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection list --json
+slurm-client connection list --json
 ```
 
 分流：
@@ -68,25 +64,25 @@ cargo run --quiet --bin slurm-client -- connection list --json
 
 1. 资源查看
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
-cargo run --quiet --bin slurm-client -- find-gpu --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- partition-info --connection <connection_id> --json
+slurm-client status --connection <connection_id> --gpu --json
+slurm-client find-gpu --connection <connection_id> --json
+slurm-client partition-info --connection <connection_id> --json
 ```
 
 2. 作业管理
 ```bash
-cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- submit --connection <connection_id> <script> --json
-cargo run --quiet --bin slurm-client -- log <job_id> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- cancel <job_id> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- alloc --connection <connection_id> -p <partition> --json
-cargo run --quiet --bin slurm-client -- run --connection <connection_id> <command>... --json
+slurm-client jobs --connection <connection_id> --json
+slurm-client submit --connection <connection_id> <script> --json
+slurm-client log <job_id> --connection <connection_id> --json
+slurm-client cancel <job_id> --connection <connection_id> --json
+slurm-client alloc --connection <connection_id> -p <partition> --json
+slurm-client run --connection <connection_id> <command>... --json
 ```
 
 3. 文件传输
 ```bash
-cargo run --quiet --bin slurm-client -- upload <local> <remote> --connection <connection_id> --json
-cargo run --quiet --bin slurm-client -- download <remote> <local> --connection <connection_id> --json
+slurm-client upload <local> <remote> --connection <connection_id> --json
+slurm-client download <remote> <local> --connection <connection_id> --json
 ```
 
 4. 环境配置
@@ -94,12 +90,12 @@ cargo run --quiet --bin slurm-client -- download <remote> <local> --connection <
 
 5. 多连接 / 实例
 ```bash
-cargo run --quiet --bin slurm-client -- connection list --json
+slurm-client connection list --json
 ```
 
 6. 兜底远程命令
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd '<command>' --json
+slurm-client exec --connection <connection_id> --cmd '<command>' --json
 ```
 
 ### Step 4：安全分流
@@ -141,10 +137,10 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 连接通过 Rust client 统一管理：
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection list --json
-cargo run --quiet --bin slurm-client -- connection get --id <connection_id> --json
-cargo run --quiet --bin slurm-client -- connection add --label <label> --kind <kind> --json
-cargo run --quiet --bin slurm-client -- connection remove --id <connection_id> --json
+slurm-client connection list --json
+slurm-client connection get --id <connection_id> --json
+slurm-client connection add --label <label> --kind <kind> --json
+slurm-client connection remove --id <connection_id> --json
 ```
 
 当存在多个连接时，后续命令必须显式传 `--connection <connection_id>`。
@@ -161,7 +157,7 @@ cargo run --quiet --bin slurm-client -- connection remove --id <connection_id> -
 4. 执行：
 
 ```bash
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label "<实例名>" \
   --host "<host>" \
   --port <port> \
@@ -173,7 +169,7 @@ cargo run --quiet --bin slurm-client -- connection add \
 5. 用轻量探测验证：
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'hostname' --json
+slurm-client exec --connection <connection_id> --cmd 'hostname' --json
 ```
 
 ---

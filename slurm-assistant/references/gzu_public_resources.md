@@ -27,13 +27,13 @@
 ### 2. 执行检查
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'ls -lh /home/share/Official/'
+slurm-client exec --connection <connection_id> --cmd 'ls -lh /home/share/Official/'
 ```
 
 ### 3. 搜索相关资源（如果有具体名称）
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*关键字*" 2>/dev/null | head -20'
+slurm-client exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*关键字*" 2>/dev/null | head -20'
 ```
 
 ### 4. 处理结果
@@ -60,13 +60,13 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 1. **检查 LaTeX 是否已安装**
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "which pdflatex"
+slurm-client exec --connection <connection_id> --cmd "which pdflatex"
 ```
 
 2. **如果未安装，引导用户使用集群提供的安装脚本**
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "sh /home/share/Official/tools/texlive/install.sh"
+slurm-client exec --connection <connection_id> --cmd "sh /home/share/Official/tools/texlive/install.sh"
 ```
 
 **安装说明：**
@@ -77,7 +77,7 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 3. **验证安装**
 
 ```bash
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd "which pdflatex && pdflatex --version"
+slurm-client exec --connection <connection_id> --cmd "which pdflatex && pdflatex --version"
 ```
 
 ### 常见 LaTeX 编译命令
@@ -100,7 +100,7 @@ lualatex document.tex
 **用户：** "帮我下载 ImageNet 数据集"
 
 **AI 应该：**
-1. 先检查：`cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*imagenet*" 2>/dev/null'`
+1. 先检查：`slurm-client exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*imagenet*" 2>/dev/null'`
 2. 如果找到：告知用户 "公共目录已有 ImageNet，无需下载，可以使用软链接直接使用"
 3. 如果未找到：才执行下载操作
 
@@ -118,7 +118,7 @@ lualatex document.tex
 **用户：** "帮我下载 ImageNet 数据集"
 
 **AI 应该：**
-1. 先检查：`cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*imagenet*" 2>/dev/null'`
+1. 先检查：`slurm-client exec --connection <connection_id> --cmd 'find /home/share/Official/ -iname "*imagenet*" 2>/dev/null'`
 2. 如果找到：告知用户 "公共目录已有 ImageNet，无需下载，可以使用软链接直接使用"
 3. 如果未找到：才执行下载操作
 

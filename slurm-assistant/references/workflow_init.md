@@ -10,15 +10,13 @@ Rust 版 `slurm-assistant` 的初始化目标只有两件事：
 ## 1. 启动并检查 server
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-server -- serve
+slurm-server serve
 ```
 
 另一个终端检查：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- server status --json
+slurm-client server status --json
 ```
 
 ---
@@ -43,8 +41,7 @@ cargo run --quiet --bin slurm-client -- server status --json
 ### 贵州大学 HPC
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label gzu-cluster \
   --host 210.40.56.85 \
   --port 21563 \
@@ -56,8 +53,7 @@ cargo run --quiet --bin slurm-client -- connection add \
 ### 其他远程集群
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label "<连接名>" \
   --host "<host>" \
   --port <port> \
@@ -70,8 +66,7 @@ cargo run --quiet --bin slurm-client -- connection add \
 ### 远程实例
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label "<实例名>" \
   --host "<host>" \
   --port <port> \
@@ -83,8 +78,7 @@ cargo run --quiet --bin slurm-client -- connection add \
 ### 集群本地模式
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection add \
+slurm-client connection add \
   --label local-cluster \
   --kind local \
   --json
@@ -97,15 +91,13 @@ cargo run --quiet --bin slurm-client -- connection add \
 先列出连接：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- connection list --json
+slurm-client connection list --json
 ```
 
 再做轻量探测：
 
 ```bash
-cd slurm-assistant/rust
-cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 'hostname' --json
+slurm-client exec --connection <connection_id> --cmd 'hostname' --json
 ```
 
 如果失败：
@@ -123,13 +115,13 @@ cargo run --quiet --bin slurm-client -- exec --connection <connection_id> --cmd 
 连接成功后，建议立即跑一个高层命令确认数据链路正常：
 
 ```bash
-cargo run --quiet --bin slurm-client -- jobs --connection <connection_id> --json
+slurm-client jobs --connection <connection_id> --json
 ```
 
 或：
 
 ```bash
-cargo run --quiet --bin slurm-client -- status --connection <connection_id> --gpu --json
+slurm-client status --connection <connection_id> --gpu --json
 ```
 
 ---
