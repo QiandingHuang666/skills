@@ -6,13 +6,17 @@ permissions:
 on:
   push:
     paths:
-      - "slurm-assistant/rust/**"
+      - "slurm-assistant/**"
+      - "install-slurm-assistant.sh"
+      - "install-slurm-assistant.ps1"
       - ".github/workflows/rust-build-cross-platform.yml"
     tags:
       - "v*"
   pull_request:
     paths:
-      - "slurm-assistant/rust/**"
+      - "slurm-assistant/**"
+      - "install-slurm-assistant.sh"
+      - "install-slurm-assistant.ps1"
       - ".github/workflows/rust-build-cross-platform.yml"
   workflow_dispatch:
     inputs:
@@ -113,12 +117,57 @@ jobs:
         with:
           path: release-assets
 
-      - name: Flatten release assets
+      - name: Build release bundles
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p release-flat
-          find release-assets -maxdepth 2 -type f -exec cp {} release-flat/ \;
+
+          copy_skill_runtime() {
+            local target_dir="$1"
+            mkdir -p "${target_dir}/skill/slurm-assistant"
+            cp slurm-assistant/SKILL.md "${target_dir}/skill/slurm-assistant/"
+            cp -R slurm-assistant/references "${target_dir}/skill/slurm-assistant/"
+          }
+
+          build_unix_bundle() {
+            local suffix="$1"
+            local artifact_name="slurm-assistant-${suffix}"
+            local root_dir="bundle-${suffix}/slurm-assistant-${suffix}"
+
+            mkdir -p "${root_dir}/package/bin"
+            cp install-slurm-assistant.sh "${root_dir}/"
+            cp install-slurm-assistant.ps1 "${root_dir}/"
+            cp "release-assets/${artifact_name}/slurm-client-${suffix}" "${root_dir}/package/bin/slurm-client"
+            cp "release-assets/${artifact_name}/slurm-server-${suffix}" "${root_dir}/package/bin/slurm-server"
+            copy_skill_runtime "${root_dir}/package"
+
+            tar -C "bundle-${suffix}" -czf "release-flat/slurm-assistant-${suffix}.tar.gz" "slurm-assistant-${suffix}"
+          }
+
+          build_windows_bundle() {
+            local suffix="windows-amd64"
+            local artifact_name="slurm-assistant-${suffix}"
+            local root_dir="bundle-${suffix}/slurm-assistant-${suffix}"
+
+            mkdir -p "${root_dir}/package/bin"
+            cp install-slurm-assistant.sh "${root_dir}/"
+            cp install-slurm-assistant.ps1 "${root_dir}/"
+            cp "release-assets/${artifact_name}/slurm-client-${suffix}.exe" "${root_dir}/package/bin/slurm-client.exe"
+            cp "release-assets/${artifact_name}/slurm-server-${suffix}.exe" "${root_dir}/package/bin/slurm-server.exe"
+            copy_skill_runtime "${root_dir}/package"
+
+            (
+              cd "bundle-${suffix}"
+              zip -qr "${GITHUB_WORKSPACE}/release-flat/slurm-assistant-${suffix}.zip" "slurm-assistant-${suffix}"
+            )
+          }
+
+          build_unix_bundle linux-amd64
+          build_unix_bundle macos-amd64
+          build_unix_bundle macos-arm64
+          build_windows_bundle
+
           ls -la release-flat
 
       - name: Create or update GitHub Release
