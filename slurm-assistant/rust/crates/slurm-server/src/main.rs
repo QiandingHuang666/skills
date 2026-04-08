@@ -1718,6 +1718,7 @@ fn generate_token() -> String {
 mod tests {
     use super::*;
     use axum::body::Body;
+    use axum::body::to_bytes;
     use axum::http::{Request, StatusCode};
     use tower::util::ServiceExt;
 
@@ -2116,5 +2117,192 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
         assert!(deleted.deleted);
         let missing = get_connection_from_db(&db_path, &created.connection_id).unwrap_err();
         assert!(missing.to_string().contains("connection not found"));
+    }
+
+    #[test]
+    fn connection_default_keepalive_is_persisted() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let created = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-cluster".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Cluster,
+                jump_host: None,
+                default_keepalive_secs: Some(1800),
+            },
+        )
+        .unwrap();
+        let record = get_connection_from_db(&db_path, &created.connection_id).unwrap();
+        assert_eq!(record.default_keepalive_secs, Some(1800));
+    }
+
+    #[test]
+    fn sessions_crud_and_summary_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let created = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-cluster".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Cluster,
+                jump_host: None,
+                default_keepalive_secs: Some(1800),
+            },
+        )
+        .unwrap();
+
+        upsert_session_to_db(
+            &db_path,
+            &SessionUpsertRequest {
+                id: "sess_a".to_string(),
+                connection_id: created.connection_id.clone(),
+                session_type: "alloc".to_string(),
+                description: Some("interactive a10".to_string()),
+                state: SessionState::Active,
+                node_role: SessionNodeRole::Compute,
+                remote_host: Some("210.40.56.85".to_string()),
+                compute_node: Some("gpu-a10-01".to_string()),
+                keepalive_secs: Some(1800),
+            },
+        )
+        .unwrap();
+
+        let list = list_sessions_from_db(&db_path).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].description.as_deref(), Some("interactive a10"));
+
+        let summary = summarize_active_sessions(&db_path).unwrap();
+        assert_eq!(summary.total_active, 1);
+        assert_eq!(summary.connections.len(), 1);
+        assert_eq!(
+            summary.connections[0].current_compute_node.as_deref(),
+            Some("gpu-a10-01")
+        );
+
+        let deleted = delete_session_from_db(&db_path, "sess_a").unwrap();
+        assert!(deleted.deleted);
+        assert!(list_sessions_from_db(&db_path).unwrap().is_empty());
+    }
+
+    #[test]
+    fn init_db_migrates_default_keepalive_column() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE connections (
+              id TEXT PRIMARY KEY,
+              label TEXT NOT NULL UNIQUE,
+              host TEXT,
+              port INTEGER,
+              username TEXT,
+              kind TEXT NOT NULL,
+              jump_host TEXT,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        drop(conn);
+
+        init_db(&db_path).unwrap();
+        let conn = open_db(&db_path).unwrap();
+        let exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('connections') WHERE name='default_keepalive_secs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1);
+    }
+
+    #[tokio::test]
+    async fn sessions_api_roundtrip() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let conn = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-cluster".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Cluster,
+                jump_host: None,
+                default_keepalive_secs: Some(1800),
+            },
+        )
+        .unwrap();
+
+        let state = ServerState {
+            token: "token".to_string(),
+            status: ServerStatusData {
+                pid: 1,
+                started_at: "123Z".to_string(),
+                transport: "tcp".to_string(),
+                host: "127.0.0.1".to_string(),
+                port: 1,
+                db_path: db_path.display().to_string(),
+                runtime_path: "runtime.json".to_string(),
+            },
+            db_path: db_path.clone(),
+        };
+        let app = app_router(state);
+
+        let upsert = SessionUpsertRequest {
+            id: "sess_api_1".to_string(),
+            connection_id: conn.connection_id,
+            session_type: "ssh".to_string(),
+            description: Some("api test".to_string()),
+            state: SessionState::Active,
+            node_role: SessionNodeRole::Login,
+            remote_host: Some("210.40.56.85".to_string()),
+            compute_node: None,
+            keepalive_secs: Some(900),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions/upsert")
+                    .header(AUTHORIZATION, "Bearer token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&upsert).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/sessions/summary")
+                    .header(AUTHORIZATION, "Bearer token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: SuccessResponse<SessionSummaryData> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload.data.total_active, 1);
+        assert_eq!(payload.data.connections.len(), 1);
     }
 }

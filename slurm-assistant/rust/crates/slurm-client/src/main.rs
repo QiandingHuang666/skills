@@ -2132,4 +2132,87 @@ cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
         assert_eq!(gpu_section.gpu_nodes[0].gpu_idle, 1);
         assert_eq!(gpu_section.gpu_nodes[0].jobs, 1);
     }
+
+    #[test]
+    fn parse_connection_add_with_default_keepalive() {
+        let cli = Cli::try_parse_from([
+            "slurm-client",
+            "connection",
+            "add",
+            "--label",
+            "gzu-cluster",
+            "--kind",
+            "cluster",
+            "--host",
+            "210.40.56.85",
+            "--port",
+            "21563",
+            "--user",
+            "qiandingh",
+            "--default-keepalive-secs",
+            "1800",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Connection(ConnectionCommand {
+                command:
+                    ConnectionSubcommand::Add {
+                        default_keepalive_secs,
+                        ..
+                    },
+            }) => {
+                assert_eq!(default_keepalive_secs, Some(1800));
+            }
+            _ => panic!("unexpected command parse result"),
+        }
+    }
+
+    #[test]
+    fn parse_session_upsert_and_summary_commands() {
+        let upsert = Cli::try_parse_from([
+            "slurm-client",
+            "session",
+            "upsert",
+            "--id",
+            "sess_1",
+            "--connection",
+            "conn_gzu_cluster",
+            "--type",
+            "alloc",
+            "--description",
+            "interactive",
+            "--state",
+            "active",
+            "--node-role",
+            "compute",
+            "--compute-node",
+            "gpu-a10-01",
+            "--keepalive-secs",
+            "900",
+        ])
+        .unwrap();
+        match upsert.command {
+            Command::Session(SessionCommand {
+                command:
+                    SessionSubcommand::Upsert {
+                        session_id,
+                        keepalive_secs,
+                        ..
+                    },
+            }) => {
+                assert_eq!(session_id, "sess_1");
+                assert_eq!(keepalive_secs, Some(900));
+            }
+            _ => panic!("unexpected upsert parse result"),
+        }
+
+        let summary = Cli::try_parse_from(["slurm-client", "session", "summary"]).unwrap();
+        match summary.command {
+            Command::Session(SessionCommand {
+                command: SessionSubcommand::Summary { .. },
+            }) => {}
+            _ => panic!("unexpected summary parse result"),
+        }
+    }
 }
