@@ -32,14 +32,17 @@ jobs:
           - label: linux-amd64
             runner: ubuntu-latest
             artifact_name: slurm-assistant-linux-amd64
+            file_suffix: linux-amd64
             bin_ext: ""
           - label: macos
             runner: macos-latest
             artifact_name: slurm-assistant-macos
+            file_suffix: macos
             bin_ext: ""
           - label: windows-amd64
             runner: windows-latest
             artifact_name: slurm-assistant-windows-amd64
+            file_suffix: windows-amd64
             bin_ext: ".exe"
 
     defaults:
@@ -61,8 +64,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/release/slurm-client${{ matrix.bin_ext }}" dist/
-          cp "target/release/slurm-server${{ matrix.bin_ext }}" dist/
+          cp "target/release/slurm-client${{ matrix.bin_ext }}" "dist/slurm-client-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
+          cp "target/release/slurm-server${{ matrix.bin_ext }}" "dist/slurm-server-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
@@ -100,7 +103,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release-flat
-          find release-assets -type f -maxdepth 2 -exec cp {} release-flat/ \;
+          find release-assets -maxdepth 2 -type f -exec cp {} release-flat/ \;
           ls -la release-flat
 
       - name: Create or update GitHub Release
