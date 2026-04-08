@@ -160,12 +160,14 @@ slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <
 
 - 默认输出的是建议执行的 `salloc` 命令
 - 加 `--execute` 才会真正发起申请
+- 当用户明确“现在申请资源”时，应默认加 `--execute`，不要把 `salloc` 手工步骤转交给用户
 
 示例：
 
 ```bash
 slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 -c 8 --execute --json
+slurm-client alloc --connection "$CONN_ID" -p gpu-a100-8card -g gpu:1 --execute --json
 ```
 
 ### release

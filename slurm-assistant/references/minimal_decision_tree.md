@@ -4,19 +4,11 @@
 
 ---
 
-## 1. 会话开始：先看本机 server
+## 1. 会话开始：先确保本机 server
 
 ```bash
-slurm-client server status --json
+slurm-client server ensure --json
 ```
-
-如果失败，先在与 client 同机的位置启动：
-
-```bash
-slurm-server serve
-```
-
-然后重试 `server status`。
 
 ---
 
@@ -62,6 +54,11 @@ slurm-client log <job_id> --connection <connection_id> --json
 slurm-client cancel <job_id> --connection <connection_id> --json
 slurm-client alloc --connection <connection_id> -p <partition> [-g gpu:1] --json
 ```
+
+`alloc` 规则：
+
+- 用户明确“现在申请”时，必须加 `--execute`
+- 不要把 `salloc` 手工执行步骤转交给用户
 
 ### 文件传输
 

@@ -77,6 +77,12 @@ slurm-client alloc --connection <connection_id> -p <partition> --json
 slurm-client run --connection <connection_id> <command>... --json
 ```
 
+`alloc` 执行规则（必须遵循）：
+
+- 用户明确要“现在申请/直接申请/申请这张卡”时，必须使用 `--execute`
+- 禁止只返回 `salloc` 规划命令后让用户手动执行
+- 只有在用户明确要求“先看命令不执行”时，才允许不加 `--execute`
+
 3. 文件传输
 ```bash
 slurm-client upload <local> <remote> --connection <connection_id> --json
