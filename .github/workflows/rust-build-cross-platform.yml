@@ -1,15 +1,25 @@
 name: rust-build-cross-platform
 
+permissions:
+  contents: write
+
 on:
   push:
     paths:
       - "slurm-assistant/rust/**"
       - ".github/workflows/rust-build-cross-platform.yml"
+    tags:
+      - "v*"
   pull_request:
     paths:
       - "slurm-assistant/rust/**"
       - ".github/workflows/rust-build-cross-platform.yml"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Git tag for GitHub Release, e.g. v0.1.0"
+        required: false
+        type: string
 
 jobs:
   build-binaries:
@@ -60,3 +70,43 @@ jobs:
           name: ${{ matrix.artifact_name }}
           path: slurm-assistant/rust/dist/*
           if-no-files-found: error
+
+  publish-release:
+    name: publish-release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || github.event.inputs.release_tag != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ github.event.inputs.release_tag }}" ]]; then
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Flatten release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-flat
+          find release-assets -type f -maxdepth 2 -exec cp {} release-flat/ \;
+          ls -la release-flat
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          files: release-flat/*
