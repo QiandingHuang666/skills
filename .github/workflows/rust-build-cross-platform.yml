@@ -33,16 +33,29 @@ jobs:
             runner: ubuntu-latest
             artifact_name: slurm-assistant-linux-amd64
             file_suffix: linux-amd64
+            rust_target: x86_64-unknown-linux-gnu
+            target_dir: target/x86_64-unknown-linux-gnu/release
             bin_ext: ""
-          - label: macos
+          - label: macos-amd64
             runner: macos-latest
-            artifact_name: slurm-assistant-macos
-            file_suffix: macos
+            artifact_name: slurm-assistant-macos-amd64
+            file_suffix: macos-amd64
+            rust_target: x86_64-apple-darwin
+            target_dir: target/x86_64-apple-darwin/release
+            bin_ext: ""
+          - label: macos-arm64
+            runner: macos-latest
+            artifact_name: slurm-assistant-macos-arm64
+            file_suffix: macos-arm64
+            rust_target: aarch64-apple-darwin
+            target_dir: target/aarch64-apple-darwin/release
             bin_ext: ""
           - label: windows-amd64
             runner: windows-latest
             artifact_name: slurm-assistant-windows-amd64
             file_suffix: windows-amd64
+            rust_target: x86_64-pc-windows-msvc
+            target_dir: target/x86_64-pc-windows-msvc/release
             bin_ext: ".exe"
 
     defaults:
@@ -53,19 +66,21 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Build release binaries
-        run: cargo build --release --bin slurm-client --bin slurm-server
+        run: cargo build --release --target ${{ matrix.rust_target }} --bin slurm-client --bin slurm-server
 
       - name: Stage artifacts
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          cp "target/release/slurm-client${{ matrix.bin_ext }}" "dist/slurm-client-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
-          cp "target/release/slurm-server${{ matrix.bin_ext }}" "dist/slurm-server-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
+          cp "${{ matrix.target_dir }}/slurm-client${{ matrix.bin_ext }}" "dist/slurm-client-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
+          cp "${{ matrix.target_dir }}/slurm-server${{ matrix.bin_ext }}" "dist/slurm-server-${{ matrix.file_suffix }}${{ matrix.bin_ext }}"
 
       - name: Upload binaries
         uses: actions/upload-artifact@v4
