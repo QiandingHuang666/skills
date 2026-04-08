@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs,
     io::Read,
     path::{Path, PathBuf},
@@ -22,9 +23,11 @@ use slurm_proto::{
     ConnectionListData, ConnectionRecord, ErrorBody, ErrorCode, ErrorResponse, ExecRunData,
     ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest, PingData,
     RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
-    SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData, SlurmJobsRequest,
-    SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
-    SlurmSubmitRequest, SuccessResponse,
+    SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData,
+    SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest,
+    SlurmSubmitData, SlurmSubmitRequest, SuccessResponse, SessionConnectionSummary,
+    SessionDeleteData, SessionListData, SessionNodeRole, SessionRecord, SessionState,
+    SessionSummaryData, SessionUpsertData, SessionUpsertRequest,
 };
 use wait_timeout::ChildExt;
 
@@ -151,6 +154,10 @@ fn app_router(state: ServerState) -> Router {
             "/v1/connections/{id}",
             get(handle_connections_get).delete(handle_connections_delete),
         )
+        .route("/v1/sessions/list", get(handle_sessions_list))
+        .route("/v1/sessions/summary", get(handle_sessions_summary))
+        .route("/v1/sessions/upsert", post(handle_sessions_upsert))
+        .route("/v1/sessions/{id}", get(handle_sessions_get).delete(handle_sessions_delete))
         .route("/v1/exec/run", post(handle_exec_run))
         .route("/v1/slurm/status_gpu", post(handle_slurm_status_gpu))
         .route("/v1/slurm/find_gpu", post(handle_slurm_find_gpu))
@@ -237,6 +244,78 @@ async fn handle_connections_delete(
         return unauthorized_response();
     }
     match delete_connection_from_db(&state.db_path, &connection_id) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_sessions_list(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match list_sessions_from_db(&state.db_path) {
+        Ok(sessions) => (
+            StatusCode::OK,
+            Json(SuccessResponse::new(SessionListData { sessions })),
+        )
+            .into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_sessions_summary(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match summarize_active_sessions(&state.db_path) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_sessions_get(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match get_session_from_db(&state.db_path, &session_id) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_sessions_upsert(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    Json(request): Json<SessionUpsertRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match upsert_session_to_db(&state.db_path, &request) {
+        Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
+        Err(err) => internal_error_response(err),
+    }
+}
+
+async fn handle_sessions_delete(
+    State(state): State<ServerState>,
+    headers: HeaderMap,
+    AxumPath(session_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if !is_authorized(&headers, &state.token) {
+        return unauthorized_response();
+    }
+    match delete_session_from_db(&state.db_path, &session_id) {
         Ok(data) => (StatusCode::OK, Json(SuccessResponse::new(data))).into_response(),
         Err(err) => internal_error_response(err),
     }
@@ -462,12 +541,29 @@ fn init_db(path: &Path) -> Result<()> {
           username TEXT,
           kind TEXT NOT NULL,
           jump_host TEXT,
+          default_keepalive_secs INTEGER,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS sessions (
+          id TEXT PRIMARY KEY,
+          connection_id TEXT NOT NULL,
+          session_type TEXT NOT NULL,
+          description TEXT,
+          state TEXT NOT NULL,
+          node_role TEXT NOT NULL,
+          remote_host TEXT,
+          compute_node TEXT,
+          keepalive_secs INTEGER,
+          created_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          FOREIGN KEY(connection_id) REFERENCES connections(id)
         );
         "#,
     )
     .context("failed to initialize schema")?;
+    ensure_column_exists(&conn, "connections", "default_keepalive_secs", "INTEGER")
+        .context("failed to migrate default_keepalive_secs column")?;
     Ok(())
 }
 
@@ -483,21 +579,42 @@ fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+fn ensure_column_exists(conn: &Connection, table: &str, column: &str, sql_type: &str) -> Result<()> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .with_context(|| format!("failed to inspect table {table}"))?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(());
+        }
+    }
+    conn.execute(
+        &format!("ALTER TABLE {table} ADD COLUMN {column} {sql_type}"),
+        [],
+    )
+    .with_context(|| format!("failed to add {column} on {table}"))?;
+    Ok(())
+}
+
 fn add_connection_to_db(path: &Path, request: &ConnectionAddRequest) -> Result<ConnectionAddData> {
     let conn = open_db(path)?;
     let now = now_iso_like();
     let connection_id = connection_id_for_label(&request.label);
+    let keepalive = normalize_keepalive_secs(request.default_keepalive_secs);
     let updated = conn
         .execute(
             r#"
-            INSERT INTO connections (id, label, host, port, username, kind, jump_host, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+            INSERT INTO connections (id, label, host, port, username, kind, jump_host, default_keepalive_secs, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
             ON CONFLICT(label) DO UPDATE SET
               host=excluded.host,
               port=excluded.port,
               username=excluded.username,
               kind=excluded.kind,
               jump_host=excluded.jump_host,
+              default_keepalive_secs=excluded.default_keepalive_secs,
               updated_at=excluded.updated_at
             "#,
             params![
@@ -508,6 +625,7 @@ fn add_connection_to_db(path: &Path, request: &ConnectionAddRequest) -> Result<C
                 request.username,
                 connection_kind_as_str(&request.kind),
                 request.jump_host,
+                keepalive.map(|v| v as i64),
                 now,
             ],
         )
@@ -524,7 +642,7 @@ fn list_connections_from_db(path: &Path) -> Result<Vec<ConnectionRecord>> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, label, host, port, username, kind, jump_host
+            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs
             FROM connections
             ORDER BY label
             "#,
@@ -540,6 +658,7 @@ fn list_connections_from_db(path: &Path) -> Result<Vec<ConnectionRecord>> {
                 username: row.get(4)?,
                 kind: parse_connection_kind(&row.get::<_, String>(5)?),
                 jump_host: row.get(6)?,
+                default_keepalive_secs: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
             })
         })
         .context("failed to query connections")?;
@@ -556,7 +675,7 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, label, host, port, username, kind, jump_host
+            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs
             FROM connections
             WHERE id = ?1
             "#,
@@ -571,6 +690,7 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
             username: row.get(4)?,
             kind: parse_connection_kind(&row.get::<_, String>(5)?),
             jump_host: row.get(6)?,
+            default_keepalive_secs: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
         })
     });
     match record {
@@ -589,6 +709,181 @@ fn delete_connection_from_db(path: &Path, connection_id: &str) -> Result<Connect
         .with_context(|| format!("failed to delete connection {connection_id}"))?;
     Ok(ConnectionDeleteData {
         deleted: deleted > 0,
+    })
+}
+
+fn upsert_session_to_db(path: &Path, request: &SessionUpsertRequest) -> Result<SessionUpsertData> {
+    if request.id.trim().is_empty() {
+        return Err(anyhow::anyhow!("session id must not be empty"));
+    }
+    if request.session_type.trim().is_empty() {
+        return Err(anyhow::anyhow!("session type must not be empty"));
+    }
+    get_connection_from_db(path, &request.connection_id)?;
+
+    let conn = open_db(path)?;
+    let now = now_iso_like();
+    let description = normalize_description(request.description.clone())?;
+    let keepalive = normalize_keepalive_secs(request.keepalive_secs);
+    let updated = conn
+        .execute(
+            r#"
+            INSERT INTO sessions (
+              id, connection_id, session_type, description, state, node_role, remote_host, compute_node, keepalive_secs, created_at, last_seen_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
+            ON CONFLICT(id) DO UPDATE SET
+              connection_id=excluded.connection_id,
+              session_type=excluded.session_type,
+              description=excluded.description,
+              state=excluded.state,
+              node_role=excluded.node_role,
+              remote_host=excluded.remote_host,
+              compute_node=excluded.compute_node,
+              keepalive_secs=excluded.keepalive_secs,
+              last_seen_at=excluded.last_seen_at
+            "#,
+            params![
+                request.id,
+                request.connection_id,
+                request.session_type,
+                description,
+                session_state_as_str(&request.state),
+                session_node_role_as_str(&request.node_role),
+                request.remote_host,
+                request.compute_node,
+                keepalive.map(|v| v as i64),
+                now,
+            ],
+        )
+        .context("failed to insert or update session")?;
+
+    Ok(SessionUpsertData {
+        session_id: request.id.clone(),
+        created: updated > 0,
+    })
+}
+
+fn list_sessions_from_db(path: &Path) -> Result<Vec<SessionRecord>> {
+    let conn = open_db(path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, connection_id, session_type, description, state, node_role, remote_host, compute_node, keepalive_secs, created_at, last_seen_at
+            FROM sessions
+            ORDER BY last_seen_at DESC, id ASC
+            "#,
+        )
+        .context("failed to prepare sessions list query")?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SessionRecord {
+                id: row.get(0)?,
+                connection_id: row.get(1)?,
+                session_type: row.get(2)?,
+                description: row.get(3)?,
+                state: parse_session_state(&row.get::<_, String>(4)?),
+                node_role: parse_session_node_role(&row.get::<_, String>(5)?),
+                remote_host: row.get(6)?,
+                compute_node: row.get(7)?,
+                keepalive_secs: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+                created_at: row.get(9)?,
+                last_seen_at: row.get(10)?,
+            })
+        })
+        .context("failed to query sessions")?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.context("failed to decode session row")?);
+    }
+    Ok(out)
+}
+
+fn get_session_from_db(path: &Path, session_id: &str) -> Result<SessionRecord> {
+    let conn = open_db(path)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, connection_id, session_type, description, state, node_role, remote_host, compute_node, keepalive_secs, created_at, last_seen_at
+            FROM sessions
+            WHERE id = ?1
+            "#,
+        )
+        .context("failed to prepare session lookup query")?;
+    let record = stmt.query_row([session_id], |row| {
+        Ok(SessionRecord {
+            id: row.get(0)?,
+            connection_id: row.get(1)?,
+            session_type: row.get(2)?,
+            description: row.get(3)?,
+            state: parse_session_state(&row.get::<_, String>(4)?),
+            node_role: parse_session_node_role(&row.get::<_, String>(5)?),
+            remote_host: row.get(6)?,
+            compute_node: row.get(7)?,
+            keepalive_secs: row.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+            created_at: row.get(9)?,
+            last_seen_at: row.get(10)?,
+        })
+    });
+    match record {
+        Ok(session) => Ok(session),
+        Err(rusqlite::Error::QueryReturnedNoRows) => {
+            Err(anyhow::anyhow!("session not found: {session_id}"))
+        }
+        Err(err) => Err(err).context("failed to decode session record"),
+    }
+}
+
+fn delete_session_from_db(path: &Path, session_id: &str) -> Result<SessionDeleteData> {
+    let conn = open_db(path)?;
+    let deleted = conn
+        .execute("DELETE FROM sessions WHERE id = ?1", [session_id])
+        .with_context(|| format!("failed to delete session {session_id}"))?;
+    Ok(SessionDeleteData {
+        deleted: deleted > 0,
+    })
+}
+
+fn summarize_active_sessions(path: &Path) -> Result<SessionSummaryData> {
+    let sessions = list_sessions_from_db(path)?;
+    let mut map: BTreeMap<String, SessionConnectionSummary> = BTreeMap::new();
+    let mut total_active = 0_u32;
+    for session in sessions
+        .into_iter()
+        .filter(|s| matches!(s.state, SessionState::Active))
+    {
+        total_active += 1;
+        let entry = map
+            .entry(session.connection_id.clone())
+            .or_insert(SessionConnectionSummary {
+                connection_id: session.connection_id.clone(),
+                active_count: 0,
+                current_session_id: None,
+                current_description: None,
+                current_node_role: None,
+                current_compute_node: None,
+                current_keepalive_secs: None,
+                last_seen_at: None,
+            });
+        entry.active_count += 1;
+        if entry
+            .last_seen_at
+            .as_ref()
+            .map(|value| value < &session.last_seen_at)
+            .unwrap_or(true)
+        {
+            entry.current_session_id = Some(session.id.clone());
+            entry.current_description = session.description.clone();
+            entry.current_node_role = Some(session.node_role.clone());
+            entry.current_compute_node = session.compute_node.clone();
+            entry.current_keepalive_secs = session.keepalive_secs;
+            entry.last_seen_at = Some(session.last_seen_at);
+        }
+    }
+
+    Ok(SessionSummaryData {
+        total_active,
+        connections: map.into_values().collect(),
     })
 }
 
@@ -1349,6 +1644,60 @@ fn parse_connection_kind(value: &str) -> slurm_proto::ConnectionKind {
     }
 }
 
+fn normalize_keepalive_secs(value: Option<u64>) -> Option<u64> {
+    value.map(|secs| secs.clamp(60, 86_400))
+}
+
+fn normalize_description(value: Option<String>) -> Result<Option<String>> {
+    let Some(raw) = value else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > 256 {
+        return Err(anyhow::anyhow!(
+            "session description too long (max 256 characters)"
+        ));
+    }
+    Ok(Some(trimmed.to_string()))
+}
+
+fn session_state_as_str(state: &SessionState) -> &'static str {
+    match state {
+        SessionState::Active => "active",
+        SessionState::Idle => "idle",
+        SessionState::Closed => "closed",
+    }
+}
+
+fn parse_session_state(value: &str) -> SessionState {
+    match value {
+        "active" => SessionState::Active,
+        "idle" => SessionState::Idle,
+        "closed" => SessionState::Closed,
+        _ => SessionState::Idle,
+    }
+}
+
+fn session_node_role_as_str(role: &SessionNodeRole) -> &'static str {
+    match role {
+        SessionNodeRole::Login => "login",
+        SessionNodeRole::Compute => "compute",
+        SessionNodeRole::Unknown => "unknown",
+    }
+}
+
+fn parse_session_node_role(value: &str) -> SessionNodeRole {
+    match value {
+        "login" => SessionNodeRole::Login,
+        "compute" => SessionNodeRole::Compute,
+        "unknown" => SessionNodeRole::Unknown,
+        _ => SessionNodeRole::Unknown,
+    }
+}
+
 fn now_iso_like() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1478,6 +1827,7 @@ mod tests {
                 username: Some("qiandingh".to_string()),
                 kind: slurm_proto::ConnectionKind::Cluster,
                 jump_host: None,
+                default_keepalive_secs: None,
             },
         )
         .unwrap();
@@ -1503,6 +1853,7 @@ mod tests {
                 username: None,
                 kind: ConnectionKind::Local,
                 jump_host: None,
+                default_keepalive_secs: None,
             },
         )
         .unwrap();
@@ -1536,6 +1887,7 @@ mod tests {
             username: Some("qiandingh".to_string()),
             kind: ConnectionKind::Cluster,
             jump_host: None,
+            default_keepalive_secs: None,
         };
         let (program, args) = build_exec_program(&connection, "hostname").unwrap();
         assert_eq!(program, "ssh");
@@ -1641,6 +1993,7 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
                 username: None,
                 kind: ConnectionKind::Local,
                 jump_host: None,
+                default_keepalive_secs: None,
             },
         )
         .unwrap();
@@ -1704,6 +2057,7 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
             username: Some("qiandingh".to_string()),
             kind: ConnectionKind::Cluster,
             jump_host: None,
+            default_keepalive_secs: None,
         };
         let (program, args) =
             build_scp_program(&connection, "/tmp/train.py", "~/train.py", false, false).unwrap();
@@ -1750,6 +2104,7 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
                 username: Some("qiandingh".to_string()),
                 kind: ConnectionKind::Cluster,
                 jump_host: None,
+                default_keepalive_secs: None,
             },
         )
         .unwrap();

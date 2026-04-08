@@ -25,7 +25,7 @@ CONN_ID="conn_gzu_cluster"
 ### connection add
 
 ```bash
-slurm-client connection add --label <label> --kind <local|cluster|instance|server> [--host <host>] [--port <port>] [--user <user>] [--jump-host <jump_host>] [--json]
+slurm-client connection add --label <label> --kind <local|cluster|instance|server> [--host <host>] [--port <port>] [--user <user>] [--jump-host <jump_host>] [--default-keepalive-secs <seconds>] [--json]
 ```
 
 示例：
@@ -37,6 +37,7 @@ slurm-client connection add \
   --port 21563 \
   --user qiandingh \
   --kind cluster \
+  --default-keepalive-secs 1800 \
   --json
 ```
 
@@ -52,10 +53,48 @@ slurm-client connection list --json
 slurm-client connection get --id <connection_id> --json
 ```
 
+返回包含 `default_keepalive_secs`（连接默认保活秒数）。
+
 ### connection remove
 
 ```bash
 slurm-client connection remove --id <connection_id> --json
+```
+
+---
+
+## 会话管理
+
+### session upsert
+
+```bash
+slurm-client session upsert --id <session_id> --connection <connection_id> --type <ssh|alloc|shell> [--description <text>] [--state <active|idle|closed>] [--node-role <login|compute|unknown>] [--remote-host <host>] [--compute-node <node>] [--keepalive-secs <seconds>] [--json]
+```
+
+### session list
+
+```bash
+slurm-client session list --json
+```
+
+### session summary
+
+```bash
+slurm-client session summary --json
+```
+
+用于快速查看当前活跃会话及每个连接的“当前会话”摘要。
+
+### session get
+
+```bash
+slurm-client session get --id <session_id> --json
+```
+
+### session remove
+
+```bash
+slurm-client session remove --id <session_id> --json
 ```
 
 ---

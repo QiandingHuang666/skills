@@ -17,7 +17,8 @@ use slurm_proto::{
     FileUploadRequest, RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest,
     SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest,
     SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
-    SlurmSubmitRequest, SuccessResponse,
+    SlurmSubmitRequest, SuccessResponse, SessionDeleteData, SessionListData, SessionNodeRole,
+    SessionRecord, SessionState, SessionSummaryData, SessionUpsertRequest,
 };
 
 #[derive(Debug, Parser)]
@@ -102,6 +103,7 @@ enum Command {
     Submit(SubmitCommand),
     Upload(UploadCommand),
     Server(ServerCommand),
+    Session(SessionCommand),
 }
 
 #[derive(Debug, Args)]
@@ -176,6 +178,8 @@ enum ConnectionSubcommand {
         kind: ConnectionKindArg,
         #[arg(long)]
         jump_host: Option<String>,
+        #[arg(long = "default-keepalive-secs")]
+        default_keepalive_secs: Option<u64>,
         #[arg(long)]
         json: bool,
     },
@@ -192,6 +196,58 @@ enum ConnectionSubcommand {
     Remove {
         #[arg(long = "id")]
         connection_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args)]
+struct SessionCommand {
+    #[command(subcommand)]
+    command: SessionSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum SessionSubcommand {
+    Upsert {
+        #[arg(long = "id")]
+        session_id: String,
+        #[arg(long = "connection")]
+        connection_id: String,
+        #[arg(long = "type")]
+        session_type: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, default_value = "active")]
+        state: SessionStateArg,
+        #[arg(long = "node-role", default_value = "unknown")]
+        node_role: SessionNodeRoleArg,
+        #[arg(long = "remote-host")]
+        remote_host: Option<String>,
+        #[arg(long = "compute-node")]
+        compute_node: Option<String>,
+        #[arg(long = "keepalive-secs")]
+        keepalive_secs: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    Get {
+        #[arg(long = "id")]
+        session_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Remove {
+        #[arg(long = "id")]
+        session_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    Summary {
         #[arg(long)]
         json: bool,
     },
@@ -360,6 +416,40 @@ impl From<ConnectionKindArg> for ConnectionKind {
     }
 }
 
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum SessionStateArg {
+    Active,
+    Idle,
+    Closed,
+}
+
+impl From<SessionStateArg> for SessionState {
+    fn from(value: SessionStateArg) -> Self {
+        match value {
+            SessionStateArg::Active => SessionState::Active,
+            SessionStateArg::Idle => SessionState::Idle,
+            SessionStateArg::Closed => SessionState::Closed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum SessionNodeRoleArg {
+    Login,
+    Compute,
+    Unknown,
+}
+
+impl From<SessionNodeRoleArg> for SessionNodeRole {
+    fn from(value: SessionNodeRoleArg) -> Self {
+        match value {
+            SessionNodeRoleArg::Login => SessionNodeRole::Login,
+            SessionNodeRoleArg::Compute => SessionNodeRole::Compute,
+            SessionNodeRoleArg::Unknown => SessionNodeRole::Unknown,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -435,6 +525,7 @@ fn main() -> Result<()> {
                     username,
                     kind,
                     jump_host,
+                    default_keepalive_secs,
                     json,
                 } => {
                     let payload = add_connection(
@@ -446,6 +537,7 @@ fn main() -> Result<()> {
                             username,
                             kind: kind.into(),
                             jump_host,
+                            default_keepalive_secs,
                         },
                     )?;
                     if json {
@@ -472,10 +564,13 @@ fn main() -> Result<()> {
                                 _ => "local".to_string(),
                             };
                             println!(
-                                "  {} [{}] {}",
+                                "  {} [{}] {} keepalive:{}",
                                 conn.label,
                                 format!("{:?}", conn.kind).to_lowercase(),
-                                endpoint
+                                endpoint,
+                                conn.default_keepalive_secs
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "-".to_string())
                             );
                         }
                     }
@@ -771,6 +866,77 @@ fn main() -> Result<()> {
                 }
             }
         },
+        Command::Session(cmd) => {
+            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            match cmd.command {
+                SessionSubcommand::Upsert {
+                    session_id,
+                    connection_id,
+                    session_type,
+                    description,
+                    state,
+                    node_role,
+                    remote_host,
+                    compute_node,
+                    keepalive_secs,
+                    json,
+                } => {
+                    let payload = upsert_session(
+                        &runtime,
+                        &SessionUpsertRequest {
+                            id: session_id,
+                            connection_id,
+                            session_type,
+                            description,
+                            state: state.into(),
+                            node_role: node_role.into(),
+                            remote_host,
+                            compute_node,
+                            keepalive_secs,
+                        },
+                    )?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        println!("Session upserted");
+                        println!("  id: {}", payload.data.session_id);
+                        println!("  created: {}", payload.data.created);
+                    }
+                }
+                SessionSubcommand::List { json } => {
+                    let payload = list_sessions(&runtime)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        print_sessions_text(&payload.data.sessions);
+                    }
+                }
+                SessionSubcommand::Get { session_id, json } => {
+                    let payload = get_session(&runtime, &session_id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        print_session_detail(&payload.data);
+                    }
+                }
+                SessionSubcommand::Remove { session_id, json } => {
+                    let payload = remove_session(&runtime, &session_id)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        println!("Session removed: {}", payload.data.deleted);
+                    }
+                }
+                SessionSubcommand::Summary { json } => {
+                    let payload = summarize_sessions(&runtime)?;
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&payload)?);
+                    } else {
+                        print_session_summary_text(&payload.data);
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -910,6 +1076,69 @@ fn remove_connection(
         )),
         runtime,
         "failed to decode connection remove response",
+    )
+}
+
+fn upsert_session(
+    runtime: &RuntimeFile,
+    request: &SessionUpsertRequest,
+) -> Result<SuccessResponse<slurm_proto::SessionUpsertData>> {
+    send_request_json(
+        http_client()
+            .post(format!(
+                "http://{}:{}/v1/sessions/upsert",
+                runtime.host, runtime.port
+            ))
+            .json(request),
+        runtime,
+        "failed to decode session upsert response",
+    )
+}
+
+fn list_sessions(runtime: &RuntimeFile) -> Result<SuccessResponse<SessionListData>> {
+    send_request_json(
+        http_client().get(format!(
+            "http://{}:{}/v1/sessions/list",
+            runtime.host, runtime.port
+        )),
+        runtime,
+        "failed to decode session list response",
+    )
+}
+
+fn get_session(runtime: &RuntimeFile, session_id: &str) -> Result<SuccessResponse<SessionRecord>> {
+    send_request_json(
+        http_client().get(format!(
+            "http://{}:{}/v1/sessions/{}",
+            runtime.host, runtime.port, session_id
+        )),
+        runtime,
+        "failed to decode session get response",
+    )
+}
+
+fn remove_session(
+    runtime: &RuntimeFile,
+    session_id: &str,
+) -> Result<SuccessResponse<SessionDeleteData>> {
+    send_request_json(
+        http_client().delete(format!(
+            "http://{}:{}/v1/sessions/{}",
+            runtime.host, runtime.port, session_id
+        )),
+        runtime,
+        "failed to decode session remove response",
+    )
+}
+
+fn summarize_sessions(runtime: &RuntimeFile) -> Result<SuccessResponse<SessionSummaryData>> {
+    send_request_json(
+        http_client().get(format!(
+            "http://{}:{}/v1/sessions/summary",
+            runtime.host, runtime.port
+        )),
+        runtime,
+        "failed to decode session summary response",
     )
 }
 
@@ -1312,6 +1541,93 @@ fn print_connection_detail(connection: &ConnectionRecord) {
         "  jump_host: {}",
         connection.jump_host.as_deref().unwrap_or("-")
     );
+    println!(
+        "  default_keepalive_secs: {}",
+        connection
+            .default_keepalive_secs
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+}
+
+fn print_session_detail(session: &SessionRecord) {
+    println!("Session");
+    println!("  id: {}", session.id);
+    println!("  connection: {}", session.connection_id);
+    println!("  type: {}", session.session_type);
+    println!("  state: {:?}", session.state);
+    println!("  node_role: {:?}", session.node_role);
+    println!(
+        "  description: {}",
+        session.description.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  remote_host: {}",
+        session.remote_host.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  compute_node: {}",
+        session.compute_node.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  keepalive_secs: {}",
+        session
+            .keepalive_secs
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!("  created_at: {}", session.created_at);
+    println!("  last_seen_at: {}", session.last_seen_at);
+}
+
+fn print_sessions_text(sessions: &[SessionRecord]) {
+    if sessions.is_empty() {
+        println!("No sessions found");
+        return;
+    }
+    println!(
+        "{:<18} {:<20} {:<8} {:<8} {:<16} {:<10} Description",
+        "SESSION_ID", "CONNECTION", "TYPE", "STATE", "COMPUTE_NODE", "KEEPALIVE"
+    );
+    for session in sessions {
+        println!(
+            "{:<18} {:<20} {:<8} {:<8} {:<16} {:<10} {}",
+            truncate_for_table(&session.id, 18),
+            truncate_for_table(&session.connection_id, 20),
+            truncate_for_table(&session.session_type, 8),
+            truncate_for_table(&format!("{:?}", session.state).to_lowercase(), 8),
+            truncate_for_table(session.compute_node.as_deref().unwrap_or("-"), 16),
+            session
+                .keepalive_secs
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            session.description.as_deref().unwrap_or("-")
+        );
+    }
+}
+
+fn print_session_summary_text(summary: &SessionSummaryData) {
+    println!("Active sessions: {}", summary.total_active);
+    if summary.connections.is_empty() {
+        return;
+    }
+    println!(
+        "{:<20} {:<7} {:<18} {:<16} {:<10} Description",
+        "CONNECTION", "ACTIVE", "CURRENT_SESSION", "COMPUTE_NODE", "KEEPALIVE"
+    );
+    for item in &summary.connections {
+        println!(
+            "{:<20} {:<7} {:<18} {:<16} {:<10} {}",
+            truncate_for_table(&item.connection_id, 20),
+            item.active_count,
+            truncate_for_table(item.current_session_id.as_deref().unwrap_or("-"), 18),
+            truncate_for_table(item.current_compute_node.as_deref().unwrap_or("-"), 16),
+            item.current_keepalive_secs
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            item.current_description.as_deref().unwrap_or("-")
+        );
+    }
 }
 
 fn parse_cpu_alloc(alloc: &str) -> (u32, u32, u32, u32) {

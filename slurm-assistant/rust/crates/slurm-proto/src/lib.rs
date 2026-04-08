@@ -84,6 +84,7 @@ pub struct ConnectionRecord {
     pub username: Option<String>,
     pub kind: ConnectionKind,
     pub jump_host: Option<String>,
+    pub default_keepalive_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +95,7 @@ pub struct ConnectionAddRequest {
     pub username: Option<String>,
     pub kind: ConnectionKind,
     pub jump_host: Option<String>,
+    pub default_keepalive_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +112,84 @@ pub struct ConnectionListData {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConnectionDeleteData {
     pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionState {
+    Active,
+    Idle,
+    Closed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionNodeRole {
+    Login,
+    Compute,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub id: String,
+    pub connection_id: String,
+    pub session_type: String,
+    pub description: Option<String>,
+    pub state: SessionState,
+    pub node_role: SessionNodeRole,
+    pub remote_host: Option<String>,
+    pub compute_node: Option<String>,
+    pub keepalive_secs: Option<u64>,
+    pub created_at: String,
+    pub last_seen_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionUpsertRequest {
+    pub id: String,
+    pub connection_id: String,
+    pub session_type: String,
+    pub description: Option<String>,
+    pub state: SessionState,
+    pub node_role: SessionNodeRole,
+    pub remote_host: Option<String>,
+    pub compute_node: Option<String>,
+    pub keepalive_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionUpsertData {
+    pub session_id: String,
+    pub created: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionDeleteData {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionListData {
+    pub sessions: Vec<SessionRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionConnectionSummary {
+    pub connection_id: String,
+    pub active_count: u32,
+    pub current_session_id: Option<String>,
+    pub current_description: Option<String>,
+    pub current_node_role: Option<SessionNodeRole>,
+    pub current_compute_node: Option<String>,
+    pub current_keepalive_secs: Option<u64>,
+    pub last_seen_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionSummaryData {
+    pub total_active: u32,
+    pub connections: Vec<SessionConnectionSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -276,6 +356,7 @@ mod tests {
             username: Some("qiandingh".to_string()),
             kind: ConnectionKind::Cluster,
             jump_host: None,
+            default_keepalive_secs: Some(1800),
         };
         let json = serde_json::to_string(&value).unwrap();
         let parsed: ConnectionAddRequest = serde_json::from_str(&json).unwrap();
@@ -287,6 +368,24 @@ mod tests {
         let value = SuccessResponse::new(ConnectionDeleteData { deleted: true });
         let json = serde_json::to_string(&value).unwrap();
         let parsed: SuccessResponse<ConnectionDeleteData> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn session_upsert_request_roundtrip() {
+        let value = SessionUpsertRequest {
+            id: "sess_gzu_a10".to_string(),
+            connection_id: "conn_gzu_cluster".to_string(),
+            session_type: "alloc".to_string(),
+            description: Some("gzu a10 interactive".to_string()),
+            state: SessionState::Active,
+            node_role: SessionNodeRole::Compute,
+            remote_host: Some("210.40.56.85".to_string()),
+            compute_node: Some("gpu-a10-01".to_string()),
+            keepalive_secs: Some(1800),
+        };
+        let json = serde_json::to_string(&value).unwrap();
+        let parsed: SessionUpsertRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
     }
 

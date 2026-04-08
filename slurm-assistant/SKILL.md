@@ -46,6 +46,12 @@ slurm-client server ensure --json
 slurm-client connection list --json
 ```
 
+然后快速检查现有会话（优先复用活跃会话）：
+
+```bash
+slurm-client session summary --json
+```
+
 分流：
 
 - 没有连接：读 `references/workflow_init.md`
