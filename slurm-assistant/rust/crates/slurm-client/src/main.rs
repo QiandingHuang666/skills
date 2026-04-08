@@ -1,6 +1,9 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -143,6 +146,10 @@ struct ServerCommand {
 #[derive(Debug, Subcommand)]
 enum ServerSubcommand {
     Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Ensure {
         #[arg(long)]
         json: bool,
     },
@@ -751,6 +758,18 @@ fn main() -> Result<()> {
                     println!("  db: {}", payload.data.db_path);
                 }
             }
+            ServerSubcommand::Ensure { json } => {
+                let payload = ensure_server_running()?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&payload)?);
+                } else {
+                    println!("Server ready");
+                    println!("  transport: {}", payload.data.transport);
+                    println!("  endpoint: {}:{}", payload.data.host, payload.data.port);
+                    println!("  runtime: {}", payload.data.runtime_path);
+                    println!("  db: {}", payload.data.db_path);
+                }
+            }
         },
     }
     Ok(())
@@ -796,6 +815,47 @@ fn fetch_server_status(runtime: &RuntimeFile) -> Result<SuccessResponse<ServerSt
         runtime,
         "failed to decode server status response",
     )
+}
+
+fn ensure_server_running() -> Result<SuccessResponse<ServerStatusData>> {
+    let runtime_path = runtime_file_path()?;
+
+    if let Ok(runtime) = read_runtime_file(&runtime_path) {
+        if let Ok(payload) = fetch_server_status(&runtime) {
+            return Ok(payload);
+        }
+    }
+
+    start_server_background()?;
+
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut last_error: Option<anyhow::Error> = None;
+    while Instant::now() < deadline {
+        match read_runtime_file(&runtime_path) {
+            Ok(runtime) => match fetch_server_status(&runtime) {
+                Ok(payload) => return Ok(payload),
+                Err(err) => last_error = Some(err),
+            },
+            Err(err) => last_error = Some(err),
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    if let Some(err) = last_error {
+        bail!("server ensure failed: {err}");
+    }
+    bail!("server ensure failed: timeout waiting for server startup");
+}
+
+fn start_server_background() -> Result<()> {
+    ProcessCommand::new("slurm-server")
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start slurm-server (is it installed and in PATH?)")?;
+    Ok(())
 }
 
 fn add_connection(

@@ -37,16 +37,8 @@ slurm-client --help
 每次会话开始先执行：
 
 ```bash
-slurm-client server status --json
+slurm-client server ensure --json
 ```
-
-如果失败，先在与 client 同机处启动：
-
-```bash
-slurm-server serve
-```
-
-然后重试 `server status`。
 
 ### Step 2：检查连接
 

@@ -6,16 +6,10 @@ Rust 版 `slurm-assistant` 通过 `slurm-server + slurm-client` 工作。除 `se
 
 ## 启动前提
 
-先在本机启动 server：
+优先让 client 自动确保 server 已运行：
 
 ```bash
-slurm-server serve
-```
-
-确认 server 可用：
-
-```bash
-slurm-client server status --json
+slurm-client server ensure --json
 ```
 
 建议先准备一个环境变量，避免重复输入：
