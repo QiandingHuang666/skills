@@ -25,7 +25,7 @@ CONN_ID="conn_gzu_cluster"
 ### connection add
 
 ```bash
-slurm-client connection add --label <label> --kind <local|cluster|instance|server> [--host <host>] [--port <port>] [--user <user>] [--jump-host <jump_host>] [--default-keepalive-secs <seconds>] [--json]
+slurm-client connection add --label <label> --kind <local|cluster|instance|server|resource-node> [--host <host>] [--port <port>] [--user <user>] [--jump-host <jump_host>] [--default-keepalive-secs <seconds>] [--json]
 ```
 
 示例：
@@ -54,6 +54,7 @@ slurm-client connection get --id <connection_id> --json
 ```
 
 返回包含 `default_keepalive_secs`（连接默认保活秒数）。
+对 `resource-node`，还会返回 `health_state / health_message / last_health_checked_at`。
 
 ### connection remove
 
@@ -153,14 +154,17 @@ slurm-client node-jobs <node> --connection <connection_id> [--json]
 ### alloc
 
 ```bash
-slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <cpus>] [--time <time>] [--mem <mem>] [--nodelist <node>] [--max-wait <minutes>] [--execute] [--json]
+slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <cpus>] [--time <time>] [--mem <mem>] [--nodelist <node>] [--max-wait <minutes>] [--timeout-secs <seconds>] [--execute] [--json]
 ```
 
 说明：
 
+- 若未传 `--cpus`，client 会自动计算 `cpus-per-task`：
+  `min(节点空闲CPU, 节点CPU总量/节点GPU总量 × 申请GPU数)`
 - 默认输出的是建议执行的 `salloc` 命令
 - 加 `--execute` 才会真正发起申请
 - 当用户明确“现在申请资源”时，应默认加 `--execute`，不要把 `salloc` 手工步骤转交给用户
+- `--execute` 模式下默认超时是 600 秒；排队较久时建议显式增大 `--timeout-secs`
 
 示例：
 
@@ -168,6 +172,7 @@ slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <
 slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 -c 8 --execute --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a100-8card -g gpu:1 --execute --json
+slurm-client alloc --connection "$CONN_ID" -p gpu-a100 -g gpu:1 --execute --timeout-secs 1800 --json
 ```
 
 ### release

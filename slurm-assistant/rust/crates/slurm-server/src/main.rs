@@ -103,7 +103,10 @@ async fn serve(requested_port: u16) -> Result<()> {
         started_at: now_iso_like(),
     };
     init_db(&paths.db_path)?;
+    refresh_resource_node_health(&paths.db_path)?;
     write_runtime_file(&paths.runtime_path, &runtime)?;
+
+    spawn_resource_node_health_task(paths.db_path.clone());
 
     let state = ServerState {
         token: runtime.token.clone(),
@@ -123,6 +126,16 @@ async fn serve(requested_port: u16) -> Result<()> {
     axum::serve(listener, app)
         .await
         .context("server exited unexpectedly")
+}
+
+fn spawn_resource_node_health_task(db_path: PathBuf) {
+    tokio::spawn(async move {
+        loop {
+            let path = db_path.clone();
+            let _ = tokio::task::spawn_blocking(move || refresh_resource_node_health(&path)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        }
+    });
 }
 
 fn print_local_status() -> Result<()> {
@@ -542,6 +555,9 @@ fn init_db(path: &Path) -> Result<()> {
           kind TEXT NOT NULL,
           jump_host TEXT,
           default_keepalive_secs INTEGER,
+          health_state TEXT,
+          health_message TEXT,
+          last_health_checked_at TEXT,
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
@@ -564,6 +580,12 @@ fn init_db(path: &Path) -> Result<()> {
     .context("failed to initialize schema")?;
     ensure_column_exists(&conn, "connections", "default_keepalive_secs", "INTEGER")
         .context("failed to migrate default_keepalive_secs column")?;
+    ensure_column_exists(&conn, "connections", "health_state", "TEXT")
+        .context("failed to migrate health_state column")?;
+    ensure_column_exists(&conn, "connections", "health_message", "TEXT")
+        .context("failed to migrate health_message column")?;
+    ensure_column_exists(&conn, "connections", "last_health_checked_at", "TEXT")
+        .context("failed to migrate last_health_checked_at column")?;
     Ok(())
 }
 
@@ -603,11 +625,28 @@ fn add_connection_to_db(path: &Path, request: &ConnectionAddRequest) -> Result<C
     let now = now_iso_like();
     let connection_id = connection_id_for_label(&request.label);
     let keepalive = normalize_keepalive_secs(request.default_keepalive_secs);
+    if matches!(request.kind, ConnectionKind::ResourceNode) {
+        if request.host.as_deref().unwrap_or("").is_empty() {
+            return Err(anyhow::anyhow!(
+                "resource_node connection requires --host"
+            ));
+        }
+        if request.username.as_deref().unwrap_or("").is_empty() {
+            return Err(anyhow::anyhow!(
+                "resource_node connection requires --user"
+            ));
+        }
+        if request.jump_host.as_deref().unwrap_or("").is_empty() {
+            return Err(anyhow::anyhow!(
+                "resource_node connection requires --jump-host"
+            ));
+        }
+    }
     let updated = conn
         .execute(
             r#"
-            INSERT INTO connections (id, label, host, port, username, kind, jump_host, default_keepalive_secs, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)
+            INSERT INTO connections (id, label, host, port, username, kind, jump_host, default_keepalive_secs, health_state, health_message, last_health_checked_at, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL, ?9, ?9)
             ON CONFLICT(label) DO UPDATE SET
               host=excluded.host,
               port=excluded.port,
@@ -615,6 +654,9 @@ fn add_connection_to_db(path: &Path, request: &ConnectionAddRequest) -> Result<C
               kind=excluded.kind,
               jump_host=excluded.jump_host,
               default_keepalive_secs=excluded.default_keepalive_secs,
+              health_state=NULL,
+              health_message=NULL,
+              last_health_checked_at=NULL,
               updated_at=excluded.updated_at
             "#,
             params![
@@ -642,7 +684,7 @@ fn list_connections_from_db(path: &Path) -> Result<Vec<ConnectionRecord>> {
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs
+            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs, health_state, health_message, last_health_checked_at
             FROM connections
             ORDER BY label
             "#,
@@ -659,6 +701,9 @@ fn list_connections_from_db(path: &Path) -> Result<Vec<ConnectionRecord>> {
                 kind: parse_connection_kind(&row.get::<_, String>(5)?),
                 jump_host: row.get(6)?,
                 default_keepalive_secs: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+                health_state: row.get(8)?,
+                health_message: row.get(9)?,
+                last_health_checked_at: row.get(10)?,
             })
         })
         .context("failed to query connections")?;
@@ -675,7 +720,7 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs
+            SELECT id, label, host, port, username, kind, jump_host, default_keepalive_secs, health_state, health_message, last_health_checked_at
             FROM connections
             WHERE id = ?1
             "#,
@@ -691,6 +736,9 @@ fn get_connection_from_db(path: &Path, connection_id: &str) -> Result<Connection
             kind: parse_connection_kind(&row.get::<_, String>(5)?),
             jump_host: row.get(6)?,
             default_keepalive_secs: row.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+            health_state: row.get(8)?,
+            health_message: row.get(9)?,
+            last_health_checked_at: row.get(10)?,
         })
     });
     match record {
@@ -885,6 +933,112 @@ fn summarize_active_sessions(path: &Path) -> Result<SessionSummaryData> {
         total_active,
         connections: map.into_values().collect(),
     })
+}
+
+fn refresh_resource_node_health(path: &Path) -> Result<()> {
+    let conn = open_db(path)?;
+    let mut stmt = conn.prepare(
+        r#"
+        SELECT id, host, port, username, jump_host
+        FROM connections
+        WHERE kind = 'resource_node'
+        "#,
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<i64>>(2)?.map(|v| v as u16),
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+        ))
+    })?;
+
+    for row in rows {
+        let (connection_id, host, port, username, jump_host) = row?;
+        let checked_at = now_iso_like();
+        let (state, message) = check_resource_node_state(
+            host.as_deref(),
+            port,
+            username.as_deref(),
+            jump_host.as_deref(),
+        );
+        conn.execute(
+            r#"
+            UPDATE connections
+            SET health_state = ?2,
+                health_message = ?3,
+                last_health_checked_at = ?4
+            WHERE id = ?1
+            "#,
+            params![connection_id, state, message, checked_at],
+        )?;
+    }
+    Ok(())
+}
+
+fn check_resource_node_state(
+    host: Option<&str>,
+    port: Option<u16>,
+    username: Option<&str>,
+    jump_host: Option<&str>,
+) -> (String, String) {
+    let (Some(host), Some(username), Some(jump_host)) = (host, username, jump_host) else {
+        return (
+            "invalid".to_string(),
+            "resource_node missing host/user/jump_host".to_string(),
+        );
+    };
+
+    let mut connect_args = vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+        "-J".to_string(),
+        jump_host.to_string(),
+    ];
+    if let Some(port) = port {
+        connect_args.push("-p".to_string());
+        connect_args.push(port.to_string());
+    }
+    connect_args.push(format!("{username}@{host}"));
+    connect_args.push("hostname".to_string());
+
+    match run_process("ssh".to_string(), &connect_args, 20) {
+        Ok(output) if output.exit_code == 0 => {}
+        Ok(output) => {
+            return (
+                "offline".to_string(),
+                format!("ssh failed: {}", output.stderr.trim()),
+            );
+        }
+        Err(err) => {
+            return ("offline".to_string(), format!("ssh error: {err}"));
+        }
+    }
+
+    let check_command = format!(
+        "squeue -h -u {username} -o '%N' | xargs -r -n1 scontrol show hostnames | grep -Fx '{host}' >/dev/null"
+    );
+    let check_args = vec![
+        "-o".to_string(),
+        "StrictHostKeyChecking=accept-new".to_string(),
+        jump_host.to_string(),
+        check_command,
+    ];
+    match run_process("ssh".to_string(), &check_args, 20) {
+        Ok(output) if output.exit_code == 0 => (
+            "online".to_string(),
+            "resource node reachable and active in user queue".to_string(),
+        ),
+        Ok(_) => (
+            "released".to_string(),
+            "node reachable but not present in current user jobs".to_string(),
+        ),
+        Err(err) => (
+            "unknown".to_string(),
+            format!("failed to check queue state: {err}"),
+        ),
+    }
 }
 
 fn execute_command(path: &Path, request: &ExecRunRequest) -> Result<ExecRunData> {
@@ -1096,7 +1250,10 @@ fn build_exec_program(
                 ))
             }
         }
-        ConnectionKind::Cluster | ConnectionKind::Instance | ConnectionKind::Server => {
+        ConnectionKind::Cluster
+        | ConnectionKind::Instance
+        | ConnectionKind::Server
+        | ConnectionKind::ResourceNode => {
             let host = connection
                 .host
                 .clone()
@@ -1196,7 +1353,10 @@ fn transfer_path(
 ) -> Result<()> {
     match connection.kind {
         ConnectionKind::Local => local_transfer(src, dst, recursive),
-        ConnectionKind::Cluster | ConnectionKind::Instance | ConnectionKind::Server => {
+        ConnectionKind::Cluster
+        | ConnectionKind::Instance
+        | ConnectionKind::Server
+        | ConnectionKind::ResourceNode => {
             let (program, args) = build_scp_program(connection, src, dst, recursive, download)?;
             let output = run_process(program, &args, 300)?;
             if output.exit_code != 0 {
@@ -1631,6 +1791,7 @@ fn connection_kind_as_str(kind: &slurm_proto::ConnectionKind) -> &'static str {
         slurm_proto::ConnectionKind::Cluster => "cluster",
         slurm_proto::ConnectionKind::Instance => "instance",
         slurm_proto::ConnectionKind::Server => "server",
+        slurm_proto::ConnectionKind::ResourceNode => "resource_node",
     }
 }
 
@@ -1640,6 +1801,7 @@ fn parse_connection_kind(value: &str) -> slurm_proto::ConnectionKind {
         "cluster" => slurm_proto::ConnectionKind::Cluster,
         "instance" => slurm_proto::ConnectionKind::Instance,
         "server" => slurm_proto::ConnectionKind::Server,
+        "resource_node" => slurm_proto::ConnectionKind::ResourceNode,
         _ => slurm_proto::ConnectionKind::Server,
     }
 }
@@ -1889,6 +2051,9 @@ mod tests {
             kind: ConnectionKind::Cluster,
             jump_host: None,
             default_keepalive_secs: None,
+            health_state: None,
+            health_message: None,
+            last_health_checked_at: None,
         };
         let (program, args) = build_exec_program(&connection, "hostname").unwrap();
         assert_eq!(program, "ssh");
@@ -2059,6 +2224,9 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
             kind: ConnectionKind::Cluster,
             jump_host: None,
             default_keepalive_secs: None,
+            health_state: None,
+            health_message: None,
+            last_health_checked_at: None,
         };
         let (program, args) =
             build_scp_program(&connection, "/tmp/train.py", "~/train.py", false, false).unwrap();
@@ -2226,6 +2394,34 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
             )
             .unwrap();
         assert_eq!(exists, 1);
+    }
+
+    #[test]
+    fn resource_node_requires_jump_host() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+        let err = add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gpu-a100-temp".to_string(),
+                host: Some("gpu-a100-01".to_string()),
+                port: Some(22),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::ResourceNode,
+                jump_host: None,
+                default_keepalive_secs: Some(1200),
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("requires --jump-host"));
+    }
+
+    #[test]
+    fn resource_node_health_check_rejects_incomplete_record() {
+        let (state, message) = check_resource_node_state(None, None, None, None);
+        assert_eq!(state, "invalid");
+        assert!(message.contains("missing"));
     }
 
     #[tokio::test]

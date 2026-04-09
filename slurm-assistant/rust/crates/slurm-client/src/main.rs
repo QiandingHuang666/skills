@@ -131,6 +131,8 @@ struct AllocCommand {
     nodelist: Option<String>,
     #[arg(long = "max-wait")]
     max_wait: Option<u32>,
+    #[arg(long, default_value_t = 600)]
+    timeout_secs: u64,
     #[arg(long = "connection")]
     connection_id: String,
     #[arg(long)]
@@ -403,6 +405,7 @@ enum ConnectionKindArg {
     Cluster,
     Instance,
     Server,
+    ResourceNode,
 }
 
 impl From<ConnectionKindArg> for ConnectionKind {
@@ -412,6 +415,7 @@ impl From<ConnectionKindArg> for ConnectionKind {
             ConnectionKindArg::Cluster => ConnectionKind::Cluster,
             ConnectionKindArg::Instance => ConnectionKind::Instance,
             ConnectionKindArg::Server => ConnectionKind::Server,
+            ConnectionKindArg::ResourceNode => ConnectionKind::ResourceNode,
         }
     }
 }
@@ -454,11 +458,29 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Alloc(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
+            let requested_gpu = parse_requested_gpu_count(cmd.gres.as_deref()).unwrap_or(1);
+            let auto_cpus = if cmd.cpus.is_none() {
+                let status = status_gpu_query(
+                    &runtime,
+                    &SlurmStatusGpuRequest {
+                        connection_id: cmd.connection_id.clone(),
+                        partition: Some(cmd.partition.clone()),
+                    },
+                )?;
+                recommend_alloc_cpus(&status.data.available_nodes, requested_gpu)
+            } else {
+                None
+            };
+            let cpus = cmd.cpus.or(auto_cpus).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "failed to determine cpus automatically; please specify --cpus explicitly"
+                )
+            })?;
             let alloc_command = build_salloc_command(
                 &cmd.partition,
                 cmd.gres.as_deref(),
-                cmd.cpus,
+                Some(cpus),
                 cmd.time.as_deref(),
                 cmd.mem.as_deref(),
                 cmd.nodelist.as_deref(),
@@ -470,7 +492,7 @@ fn main() -> Result<()> {
                     &ExecRunRequest {
                         connection_id: cmd.connection_id,
                         command: alloc_command,
-                        timeout_secs: 30,
+                        timeout_secs: cmd.timeout_secs,
                     },
                 )?;
                 if cmd.json {
@@ -498,7 +520,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Cancel(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = cancel_query(
                 &runtime,
                 &SlurmCancelRequest {
@@ -516,7 +538,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Connection(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             match cmd.command {
                 ConnectionSubcommand::Add {
                     label,
@@ -564,13 +586,14 @@ fn main() -> Result<()> {
                                 _ => "local".to_string(),
                             };
                             println!(
-                                "  {} [{}] {} keepalive:{}",
+                                "  {} [{}] {} keepalive:{} health:{}",
                                 conn.label,
                                 format!("{:?}", conn.kind).to_lowercase(),
                                 endpoint,
                                 conn.default_keepalive_secs
                                     .map(|v| v.to_string())
-                                    .unwrap_or_else(|| "-".to_string())
+                                    .unwrap_or_else(|| "-".to_string()),
+                                conn.health_state.as_deref().unwrap_or("unknown")
                             );
                         }
                     }
@@ -602,7 +625,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Download(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = download_query(
                 &runtime,
                 &FileDownloadRequest {
@@ -619,7 +642,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Exec(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = exec_run(
                 &runtime,
                 &ExecRunRequest {
@@ -641,7 +664,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Jobs(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = jobs_query(
                 &runtime,
                 &SlurmJobsRequest {
@@ -674,7 +697,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Log(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = log_query(
                 &runtime,
                 &SlurmLogRequest {
@@ -694,7 +717,7 @@ fn main() -> Result<()> {
             }
         }
         Command::NodeInfo(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = node_info_query(&runtime, &cmd.connection_id, &cmd.node)?;
             if cmd.json {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -706,7 +729,7 @@ fn main() -> Result<()> {
             }
         }
         Command::NodeJobs(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = node_jobs_query(&runtime, &cmd.connection_id, &cmd.node)?;
             if cmd.json {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -715,7 +738,7 @@ fn main() -> Result<()> {
             }
         }
         Command::PartitionInfo(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload =
                 partition_info_query(&runtime, &cmd.connection_id, cmd.partition.as_deref())?;
             if cmd.json {
@@ -725,7 +748,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Release(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = cancel_query(
                 &runtime,
                 &SlurmCancelRequest {
@@ -743,7 +766,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Run(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let srun_command = build_srun_command(
                 &cmd.command,
                 cmd.partition.as_deref(),
@@ -777,7 +800,7 @@ fn main() -> Result<()> {
             if !cmd.gpu {
                 bail!("only `status --gpu` is implemented right now");
             }
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = status_gpu_query(
                 &runtime,
                 &SlurmStatusGpuRequest {
@@ -792,7 +815,7 @@ fn main() -> Result<()> {
             }
         }
         Command::FindGpu(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = find_gpu_query(
                 &runtime,
                 &SlurmFindGpuRequest {
@@ -807,7 +830,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Submit(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_request()?;
             let payload = submit_query(
                 &runtime,
                 &SlurmSubmitRequest {
@@ -970,6 +993,17 @@ fn read_runtime_file(path: &Path) -> Result<RuntimeFile> {
     let runtime = serde_json::from_slice::<RuntimeFile>(&bytes)
         .with_context(|| format!("failed to parse runtime file {}", path.display()))?;
     Ok(runtime)
+}
+
+fn runtime_for_request() -> Result<RuntimeFile> {
+    let path = runtime_file_path()?;
+    if let Ok(runtime) = read_runtime_file(&path) {
+        if fetch_server_status(&runtime).is_ok() {
+            return Ok(runtime);
+        }
+    }
+    let _ = ensure_server_running()?;
+    read_runtime_file(&path)
 }
 
 fn fetch_server_status(runtime: &RuntimeFile) -> Result<SuccessResponse<ServerStatusData>> {
@@ -1548,6 +1582,18 @@ fn print_connection_detail(connection: &ConnectionRecord) {
             .map(|v| v.to_string())
             .unwrap_or_else(|| "-".to_string())
     );
+    println!(
+        "  health_state: {}",
+        connection.health_state.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "  health_message: {}",
+        connection.health_message.as_deref().unwrap_or("-")
+    );
+    println!(
+        "  last_health_checked_at: {}",
+        connection.last_health_checked_at.as_deref().unwrap_or("-")
+    );
 }
 
 fn print_session_detail(session: &SessionRecord) {
@@ -1670,6 +1716,46 @@ fn parse_gpu_gres_local(gres: &str) -> (u32, Option<String>) {
         );
     }
     (0, None)
+}
+
+fn parse_requested_gpu_count(gres: Option<&str>) -> Option<u32> {
+    let Some(raw) = gres else {
+        return None;
+    };
+    let lower = raw.to_ascii_lowercase();
+    if let Some(captures) = regex::Regex::new(r"gpu:[a-zA-Z_]\w*:(\d+)")
+        .ok()
+        .and_then(|re| re.captures(&lower))
+    {
+        return captures
+            .get(1)
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .or(Some(1));
+    }
+    if let Some(captures) = regex::Regex::new(r"gpu:(\d+)")
+        .ok()
+        .and_then(|re| re.captures(&lower))
+    {
+        return captures
+            .get(1)
+            .and_then(|m| m.as_str().parse::<u32>().ok())
+            .or(Some(1));
+    }
+    Some(1)
+}
+
+fn recommend_alloc_cpus(nodes: &[SlurmGpuNode], requested_gpu: u32) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    for node in nodes {
+        if node.gpu_total == 0 || node.gpu_idle < requested_gpu {
+            continue;
+        }
+        let per_gpu = (node.cpu_total / node.gpu_total).max(1);
+        let target = per_gpu.saturating_mul(requested_gpu);
+        let candidate = node.cpu_idle.min(target).max(1);
+        best = Some(best.map(|current| current.max(candidate)).unwrap_or(candidate));
+    }
+    best
 }
 
 fn parse_node_running_jobs(stdout: &str) -> Result<Vec<NodeJobEntry>> {
@@ -2081,6 +2167,12 @@ mod tests {
     }
 
     #[test]
+    fn build_salloc_command_omits_mem_and_time_when_not_set() {
+        let command = build_salloc_command("gpu-a100", Some("gpu:1"), Some(12), None, None, None, None);
+        assert_eq!(command, "salloc -p gpu-a100 --cpus-per-task=12 --gres=gpu:1");
+    }
+
+    #[test]
     fn build_srun_command_requires_payload() {
         let err = build_srun_command(&[], None, None, None, None, None, None).unwrap_err();
         assert!(err.to_string().contains("must provide command"));
@@ -2131,6 +2223,40 @@ cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
             .unwrap();
         assert_eq!(gpu_section.gpu_nodes[0].gpu_idle, 1);
         assert_eq!(gpu_section.gpu_nodes[0].jobs, 1);
+    }
+
+    #[test]
+    fn parse_requested_gpu_count_supports_common_gres_forms() {
+        assert_eq!(parse_requested_gpu_count(Some("gpu:1")), Some(1));
+        assert_eq!(parse_requested_gpu_count(Some("gpu:a100:2")), Some(2));
+        assert_eq!(parse_requested_gpu_count(Some("gpu:a10:4(S:0)")), Some(4));
+        assert_eq!(parse_requested_gpu_count(None), None);
+    }
+
+    #[test]
+    fn recommend_alloc_cpus_uses_min_idle_and_ratio_rule() {
+        let nodes = vec![
+            SlurmGpuNode {
+                node: "gpu-a100-1".to_string(),
+                partition: "gpu-a100".to_string(),
+                gpu_idle: 1,
+                gpu_total: 4,
+                gpu_type: "A100".to_string(),
+                cpu_idle: 20,
+                cpu_total: 128,
+            },
+            SlurmGpuNode {
+                node: "gpu-a100-2".to_string(),
+                partition: "gpu-a100".to_string(),
+                gpu_idle: 2,
+                gpu_total: 8,
+                gpu_type: "A100".to_string(),
+                cpu_idle: 40,
+                cpu_total: 128,
+            },
+        ];
+        let cpus = recommend_alloc_cpus(&nodes, 1).unwrap();
+        assert_eq!(cpus, 20);
     }
 
     #[test]

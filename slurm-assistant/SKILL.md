@@ -57,6 +57,7 @@ slurm-client session summary --json
 - 没有连接：读 `references/workflow_init.md`
 - 一个连接：直接记录其 `connection_id`
 - 多个连接：按用户意图选 `cluster`、`instance` 或 `local`
+- 若存在 `resource-node` 连接，先查看其 `health_state`，优先复用 `online` 状态连接
 
 ### Step 3：按 6 类任务执行
 

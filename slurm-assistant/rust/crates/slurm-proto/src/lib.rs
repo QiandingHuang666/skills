@@ -73,6 +73,7 @@ pub enum ConnectionKind {
     Cluster,
     Instance,
     Server,
+    ResourceNode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +86,9 @@ pub struct ConnectionRecord {
     pub kind: ConnectionKind,
     pub jump_host: Option<String>,
     pub default_keepalive_secs: Option<u64>,
+    pub health_state: Option<String>,
+    pub health_message: Option<String>,
+    pub last_health_checked_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
