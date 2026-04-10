@@ -175,6 +175,13 @@ cd slurm-assistant/rust
 bash scripts/live_smoke_gzu.sh
 ```
 
+恢复链路 smoke（重点校验 `server ensure` 的能力返回、`session summary` 可用性和基础远程执行）：
+
+```bash
+cd slurm-assistant/rust
+bash scripts/live_recovery_smoke_gzu.sh
+```
+
 ## 技术栈
 
 - Rust

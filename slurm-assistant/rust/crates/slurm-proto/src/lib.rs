@@ -53,6 +53,14 @@ pub struct ServerStatusData {
     pub port: u16,
     pub db_path: String,
     pub runtime_path: String,
+    #[serde(default = "default_server_api_version")]
+    pub api_version: u32,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+fn default_server_api_version() -> u32 {
+    0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -545,5 +553,21 @@ mod tests {
         let json = serde_json::to_string(&value).unwrap();
         let parsed: RuntimeFile = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, value);
+    }
+
+    #[test]
+    fn server_status_backward_compat_defaults() {
+        let json = r#"{
+          "pid": 1,
+          "started_at": "123Z",
+          "transport": "tcp",
+          "host": "127.0.0.1",
+          "port": 49380,
+          "db_path": "state.db",
+          "runtime_path": "runtime.json"
+        }"#;
+        let parsed: ServerStatusData = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.api_version, 0);
+        assert!(parsed.capabilities.is_empty());
     }
 }

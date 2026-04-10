@@ -12,6 +12,9 @@ Rust 版 `slurm-assistant` 通过 `slurm-server + slurm-client` 工作。除 `se
 slurm-client server ensure --json
 ```
 
+`server ensure/status` 返回里包含 `api_version` 和 `capabilities`。  
+client 会在执行命令前按能力自动校验；若检测到本机 server 版本漂移，会自动重启本机 server 并重试。
+
 建议先准备一个环境变量，避免重复输入：
 
 ```bash

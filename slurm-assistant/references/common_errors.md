@@ -6,6 +6,28 @@
 
 ## 连接和认证错误
 
+### 错误: `server returned 404 Not Found`（例如 `session summary`）
+
+**原因**:
+- 本机 `runtime.json` 指向了旧版 `slurm-server` 进程
+- `slurm-client` 与 `slurm-server` 二进制版本不一致
+
+**解决方案**:
+1. 先看 server 能力信息:
+   ```bash
+   slurm-client server status --json
+   ```
+2. 主动触发 ensure:
+   ```bash
+   slurm-client server ensure --json
+   ```
+3. 仍异常时，升级并确保 `slurm-client` / `slurm-server` 来自同一 release
+4. 重试原命令（例如 `slurm-client session summary --json`）
+
+说明：
+- 新版 client 已内置“能力探测 + 自动重启本机 server + 重试”逻辑
+- 如果重试后仍报错，通常是本机存在旧二进制残留或 PATH 指向错误版本
+
 ### 错误: Connection refused / Connection timed out
 
 **原因**:

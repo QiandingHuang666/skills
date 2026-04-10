@@ -31,6 +31,8 @@ use slurm_proto::{
 };
 use wait_timeout::ChildExt;
 
+const SERVER_API_VERSION: u32 = 1;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "slurm-server",
@@ -118,6 +120,8 @@ async fn serve(requested_port: u16) -> Result<()> {
             port: runtime.port,
             db_path: paths.db_path.display().to_string(),
             runtime_path: paths.runtime_path.display().to_string(),
+            api_version: SERVER_API_VERSION,
+            capabilities: server_capabilities(),
         },
         db_path: paths.db_path.clone(),
     };
@@ -149,12 +153,25 @@ fn print_local_status() -> Result<()> {
         port: runtime.port,
         db_path: paths.db_path.display().to_string(),
         runtime_path: paths.runtime_path.display().to_string(),
+        api_version: SERVER_API_VERSION,
+        capabilities: server_capabilities(),
     };
     println!(
         "{}",
         serde_json::to_string_pretty(&SuccessResponse::new(status))?
     );
     Ok(())
+}
+
+fn server_capabilities() -> Vec<String> {
+    vec![
+        "connections".to_string(),
+        "exec".to_string(),
+        "files".to_string(),
+        "server".to_string(),
+        "sessions".to_string(),
+        "slurm".to_string(),
+    ]
 }
 
 fn app_router(state: ServerState) -> Router {
@@ -1895,6 +1912,8 @@ mod tests {
             port: 47831,
             db_path: paths.db_path.display().to_string(),
             runtime_path: paths.runtime_path.display().to_string(),
+            api_version: SERVER_API_VERSION,
+            capabilities: server_capabilities(),
         };
         assert_eq!(status.transport, "tcp");
         assert_eq!(status.host, "127.0.0.1");
@@ -1933,6 +1952,8 @@ mod tests {
                 port: 1,
                 db_path: "state.db".to_string(),
                 runtime_path: "runtime.json".to_string(),
+                api_version: SERVER_API_VERSION,
+                capabilities: server_capabilities(),
             },
             db_path: PathBuf::from("state.db"),
         };
@@ -2453,6 +2474,8 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
                 port: 1,
                 db_path: db_path.display().to_string(),
                 runtime_path: "runtime.json".to_string(),
+                api_version: SERVER_API_VERSION,
+                capabilities: server_capabilities(),
             },
             db_path: db_path.clone(),
         };

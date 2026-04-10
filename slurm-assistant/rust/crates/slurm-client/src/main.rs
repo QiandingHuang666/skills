@@ -1,9 +1,10 @@
 use std::{
     env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
@@ -20,6 +21,12 @@ use slurm_proto::{
     SlurmSubmitRequest, SuccessResponse, SessionDeleteData, SessionListData, SessionNodeRole,
     SessionRecord, SessionState, SessionSummaryData, SessionUpsertRequest,
 };
+
+const CAP_CONNECTIONS: &str = "connections";
+const CAP_EXEC: &str = "exec";
+const CAP_FILES: &str = "files";
+const CAP_SESSIONS: &str = "sessions";
+const CAP_SLURM: &str = "slurm";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -458,7 +465,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Alloc(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let requested_gpu = parse_requested_gpu_count(cmd.gres.as_deref()).unwrap_or(1);
             let auto_cpus = if cmd.cpus.is_none() {
                 let status = status_gpu_query(
@@ -520,7 +527,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Cancel(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = cancel_query(
                 &runtime,
                 &SlurmCancelRequest {
@@ -538,7 +545,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Connection(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_CONNECTIONS)?;
             match cmd.command {
                 ConnectionSubcommand::Add {
                     label,
@@ -625,7 +632,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Download(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_FILES)?;
             let payload = download_query(
                 &runtime,
                 &FileDownloadRequest {
@@ -642,7 +649,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Exec(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_EXEC)?;
             let payload = exec_run(
                 &runtime,
                 &ExecRunRequest {
@@ -664,7 +671,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Jobs(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = jobs_query(
                 &runtime,
                 &SlurmJobsRequest {
@@ -697,7 +704,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Log(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = log_query(
                 &runtime,
                 &SlurmLogRequest {
@@ -717,7 +724,7 @@ fn main() -> Result<()> {
             }
         }
         Command::NodeInfo(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = node_info_query(&runtime, &cmd.connection_id, &cmd.node)?;
             if cmd.json {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -729,7 +736,7 @@ fn main() -> Result<()> {
             }
         }
         Command::NodeJobs(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = node_jobs_query(&runtime, &cmd.connection_id, &cmd.node)?;
             if cmd.json {
                 println!("{}", serde_json::to_string_pretty(&payload)?);
@@ -738,7 +745,7 @@ fn main() -> Result<()> {
             }
         }
         Command::PartitionInfo(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload =
                 partition_info_query(&runtime, &cmd.connection_id, cmd.partition.as_deref())?;
             if cmd.json {
@@ -748,7 +755,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Release(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = cancel_query(
                 &runtime,
                 &SlurmCancelRequest {
@@ -766,7 +773,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Run(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let srun_command = build_srun_command(
                 &cmd.command,
                 cmd.partition.as_deref(),
@@ -800,7 +807,7 @@ fn main() -> Result<()> {
             if !cmd.gpu {
                 bail!("only `status --gpu` is implemented right now");
             }
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = status_gpu_query(
                 &runtime,
                 &SlurmStatusGpuRequest {
@@ -815,7 +822,7 @@ fn main() -> Result<()> {
             }
         }
         Command::FindGpu(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = find_gpu_query(
                 &runtime,
                 &SlurmFindGpuRequest {
@@ -830,7 +837,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Submit(cmd) => {
-            let runtime = runtime_for_request()?;
+            let runtime = runtime_for_capability(CAP_SLURM)?;
             let payload = submit_query(
                 &runtime,
                 &SlurmSubmitRequest {
@@ -846,7 +853,7 @@ fn main() -> Result<()> {
             }
         }
         Command::Upload(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_capability(CAP_FILES)?;
             let payload = upload_query(
                 &runtime,
                 &FileUploadRequest {
@@ -872,25 +879,29 @@ fn main() -> Result<()> {
                     println!("Server status");
                     println!("  transport: {}", payload.data.transport);
                     println!("  endpoint: {}:{}", payload.data.host, payload.data.port);
+                    println!("  api_version: {}", payload.data.api_version);
+                    println!("  capabilities: {}", payload.data.capabilities.join(","));
                     println!("  runtime: {}", payload.data.runtime_path);
                     println!("  db: {}", payload.data.db_path);
                 }
             }
             ServerSubcommand::Ensure { json } => {
-                let payload = ensure_server_running()?;
+                let payload = ensure_server_running_with_lock()?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&payload)?);
                 } else {
                     println!("Server ready");
                     println!("  transport: {}", payload.data.transport);
                     println!("  endpoint: {}:{}", payload.data.host, payload.data.port);
+                    println!("  api_version: {}", payload.data.api_version);
+                    println!("  capabilities: {}", payload.data.capabilities.join(","));
                     println!("  runtime: {}", payload.data.runtime_path);
                     println!("  db: {}", payload.data.db_path);
                 }
             }
         },
         Command::Session(cmd) => {
-            let runtime = read_runtime_file(&runtime_file_path()?)?;
+            let runtime = runtime_for_capability(CAP_SESSIONS)?;
             match cmd.command {
                 SessionSubcommand::Upsert {
                     session_id,
@@ -1002,8 +1013,77 @@ fn runtime_for_request() -> Result<RuntimeFile> {
             return Ok(runtime);
         }
     }
-    let _ = ensure_server_running()?;
+    let _ = ensure_server_running_with_lock()?;
     read_runtime_file(&path)
+}
+
+fn runtime_for_capability(required: &str) -> Result<RuntimeFile> {
+    let runtime_path = runtime_file_path()?;
+    let runtime = runtime_for_request()?;
+    if server_supports_capability(&runtime, required)? {
+        return Ok(runtime);
+    }
+
+    let _guard = acquire_client_lock(Duration::from_secs(12))?;
+    let latest = match read_runtime_file(&runtime_path) {
+        Ok(current) if fetch_server_status(&current).is_ok() => current,
+        _ => {
+            let _ = ensure_server_running()?;
+            read_runtime_file(&runtime_path)?
+        }
+    };
+    if server_supports_capability(&latest, required)? {
+        return Ok(latest);
+    }
+    restart_server_process(&latest)?;
+    let _ = ensure_server_running()?;
+    let refreshed = read_runtime_file(&runtime_path)?;
+    if server_supports_capability(&refreshed, required)? {
+        return Ok(refreshed);
+    }
+
+    bail!(
+        "local server does not support capability `{required}` after restart; please upgrade slurm-server and slurm-client to the same version"
+    );
+}
+
+fn server_supports_capability(runtime: &RuntimeFile, capability: &str) -> Result<bool> {
+    let payload = fetch_server_status(runtime)?;
+    if server_status_supports_capability(&payload.data, capability) {
+        return Ok(true);
+    }
+    if should_assume_legacy_capability(&payload.data, capability) {
+        return Ok(true);
+    }
+    if should_probe_legacy_sessions(&payload.data, capability) {
+        return probe_legacy_session_support(runtime);
+    }
+    Ok(false)
+}
+
+fn server_status_supports_capability(status: &ServerStatusData, capability: &str) -> bool {
+    status.capabilities.iter().any(|item| item == capability)
+}
+
+fn should_assume_legacy_capability(status: &ServerStatusData, capability: &str) -> bool {
+    status.api_version == 0 && status.capabilities.is_empty() && capability != CAP_SESSIONS
+}
+
+fn should_probe_legacy_sessions(status: &ServerStatusData, capability: &str) -> bool {
+    status.api_version == 0 && status.capabilities.is_empty() && capability == CAP_SESSIONS
+}
+
+fn probe_legacy_session_support(runtime: &RuntimeFile) -> Result<bool> {
+    let response = http_client()
+        .get(format!(
+            "http://{}:{}/v1/sessions/summary",
+            runtime.host, runtime.port
+        ))
+        .header(AUTHORIZATION, format!("Bearer {}", runtime.token))
+        .header(CONTENT_TYPE, "application/json")
+        .send()
+        .context("failed to probe legacy session API support")?;
+    Ok(response.status().as_u16() != 404)
 }
 
 fn fetch_server_status(runtime: &RuntimeFile) -> Result<SuccessResponse<ServerStatusData>> {
@@ -1047,6 +1127,11 @@ fn ensure_server_running() -> Result<SuccessResponse<ServerStatusData>> {
     bail!("server ensure failed: timeout waiting for server startup");
 }
 
+fn ensure_server_running_with_lock() -> Result<SuccessResponse<ServerStatusData>> {
+    let _guard = acquire_client_lock(Duration::from_secs(12))?;
+    ensure_server_running()
+}
+
 fn start_server_background() -> Result<()> {
     ProcessCommand::new("slurm-server")
         .arg("serve")
@@ -1056,6 +1141,138 @@ fn start_server_background() -> Result<()> {
         .spawn()
         .context("failed to start slurm-server (is it installed and in PATH?)")?;
     Ok(())
+}
+
+fn restart_server_process(runtime: &RuntimeFile) -> Result<()> {
+    stop_server_process(runtime.pid)?;
+    if !wait_for_server_offline(runtime, Duration::from_secs(2)) {
+        force_stop_server_process(runtime.pid)?;
+        let _ = wait_for_server_offline(runtime, Duration::from_secs(2));
+    }
+    start_server_background()?;
+    Ok(())
+}
+
+fn stop_server_process(pid: u32) -> Result<()> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut cmd = ProcessCommand::new("taskkill");
+        cmd.arg("/PID").arg(pid.to_string()).arg("/T");
+        cmd
+    };
+
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut cmd = ProcessCommand::new("kill");
+        cmd.arg(pid.to_string());
+        cmd
+    };
+
+    let status = command
+        .status()
+        .with_context(|| format!("failed to stop existing slurm-server process {pid}"))?;
+
+    #[cfg(windows)]
+    if !status.success() {
+        let mut fallback = ProcessCommand::new("taskkill");
+        fallback.arg("/PID").arg(pid.to_string()).arg("/T").arg("/F");
+        let _ = fallback.status();
+    }
+
+    #[cfg(not(windows))]
+    let _ = status;
+    Ok(())
+}
+
+fn force_stop_server_process(pid: u32) -> Result<()> {
+    #[cfg(windows)]
+    {
+        let mut command = ProcessCommand::new("taskkill");
+        command.arg("/PID").arg(pid.to_string()).arg("/T").arg("/F");
+        let _ = command.status();
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut command = ProcessCommand::new("kill");
+        command.arg("-9").arg(pid.to_string());
+        let _ = command.status();
+        Ok(())
+    }
+}
+
+fn wait_for_server_offline(runtime: &RuntimeFile, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if fetch_server_status(runtime).is_err() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    false
+}
+
+struct ClientLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for ClientLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn client_lock_path() -> Result<PathBuf> {
+    let runtime = runtime_file_path()?;
+    let base = runtime
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve runtime parent directory"))?;
+    Ok(base.join("client.lock"))
+}
+
+fn acquire_client_lock(timeout: Duration) -> Result<ClientLockGuard> {
+    let path = client_lock_path()?;
+    let deadline = Instant::now() + timeout;
+    let stale_after = Duration::from_secs(30);
+    loop {
+        match fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(ClientLockGuard { path }),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {
+                cleanup_stale_client_lock(&path, stale_after);
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting for client lock {}", path.display());
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to create client lock {}", path.display()));
+            }
+        }
+    }
+}
+
+fn cleanup_stale_client_lock(path: &Path, stale_after: Duration) {
+    let metadata = match fs::metadata(path) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let modified = match metadata.modified() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    let age = match SystemTime::now().duration_since(modified) {
+        Ok(value) => value,
+        Err(_) => return,
+    };
+    if age >= stale_after {
+        let _ = fs::remove_file(path);
+    }
 }
 
 fn add_connection(
@@ -2097,6 +2314,8 @@ mod tests {
             port: 0,
             db_path: "state.db".to_string(),
             runtime_path: "runtime.json".to_string(),
+            api_version: 1,
+            capabilities: vec![CAP_SLURM.to_string()],
         });
         assert_eq!(payload.data.transport, "tcp");
         assert_eq!(payload.data.host, "127.0.0.1");
@@ -2340,5 +2559,71 @@ cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
             }) => {}
             _ => panic!("unexpected summary parse result"),
         }
+    }
+
+    #[test]
+    fn server_capability_detects_supported_capability() {
+        let status = ServerStatusData {
+            pid: 1,
+            started_at: "123Z".to_string(),
+            transport: "tcp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 49380,
+            db_path: "state.db".to_string(),
+            runtime_path: "runtime.json".to_string(),
+            api_version: 1,
+            capabilities: vec![CAP_SLURM.to_string(), CAP_SESSIONS.to_string()],
+        };
+        assert!(server_status_supports_capability(&status, CAP_SESSIONS));
+    }
+
+    #[test]
+    fn server_capability_detects_missing_capability() {
+        let status = ServerStatusData {
+            pid: 1,
+            started_at: "123Z".to_string(),
+            transport: "tcp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 49380,
+            db_path: "state.db".to_string(),
+            runtime_path: "runtime.json".to_string(),
+            api_version: 1,
+            capabilities: vec![CAP_SLURM.to_string()],
+        };
+        assert!(!server_status_supports_capability(&status, CAP_SESSIONS));
+    }
+
+    #[test]
+    fn legacy_server_assumes_non_session_capability() {
+        let status = ServerStatusData {
+            pid: 1,
+            started_at: "123Z".to_string(),
+            transport: "tcp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 49380,
+            db_path: "state.db".to_string(),
+            runtime_path: "runtime.json".to_string(),
+            api_version: 0,
+            capabilities: vec![],
+        };
+        assert!(should_assume_legacy_capability(&status, CAP_SLURM));
+        assert!(!should_assume_legacy_capability(&status, CAP_SESSIONS));
+    }
+
+    #[test]
+    fn legacy_server_only_probes_session_capability() {
+        let status = ServerStatusData {
+            pid: 1,
+            started_at: "123Z".to_string(),
+            transport: "tcp".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 49380,
+            db_path: "state.db".to_string(),
+            runtime_path: "runtime.json".to_string(),
+            api_version: 0,
+            capabilities: vec![],
+        };
+        assert!(should_probe_legacy_sessions(&status, CAP_SESSIONS));
+        assert!(!should_probe_legacy_sessions(&status, CAP_EXEC));
     }
 }
