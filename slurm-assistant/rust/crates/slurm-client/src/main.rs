@@ -143,6 +143,10 @@ struct AllocCommand {
     #[arg(long = "connection")]
     connection_id: String,
     #[arg(long)]
+    preempt: bool,
+    #[arg(long = "preempt-session")]
+    preempt_session: Option<String>,
+    #[arg(long)]
     execute: bool,
     #[arg(long)]
     json: bool,
@@ -493,12 +497,17 @@ fn main() -> Result<()> {
                 cmd.nodelist.as_deref(),
                 cmd.max_wait,
             );
+            let final_command = if cmd.preempt {
+                build_preempt_alloc_command(&alloc_command, cmd.preempt_session.as_deref())
+            } else {
+                alloc_command
+            };
             if cmd.execute {
                 let payload = exec_run(
                     &runtime,
                     &ExecRunRequest {
                         connection_id: cmd.connection_id,
-                        command: alloc_command,
+                        command: final_command,
                         timeout_secs: cmd.timeout_secs,
                     },
                 )?;
@@ -517,13 +526,17 @@ fn main() -> Result<()> {
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&AllocPlanOutput {
-                        command: alloc_command,
+                        command: final_command,
                         execute: false,
                     })?
                 );
             } else {
-                println!("Interactive allocation command");
-                println!("  {}", alloc_command);
+                if cmd.preempt {
+                    println!("Preempt allocation launcher command");
+                } else {
+                    println!("Interactive allocation command");
+                }
+                println!("  {}", final_command);
             }
         }
         Command::Cancel(cmd) => {
@@ -2236,6 +2249,35 @@ fn build_salloc_command(
     parts.join(" ")
 }
 
+fn shell_single_quote(input: &str) -> String {
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
+}
+
+fn build_preempt_alloc_command(alloc_command: &str, session_name: Option<&str>) -> String {
+    let keepalive_shell = "echo '[slurm-assistant] allocation active'; sleep infinity";
+    let alloc_with_keepalive = format!(
+        "{alloc_command} bash -lc {}",
+        shell_single_quote(keepalive_shell)
+    );
+    let tmux_payload = format!("bash -lc {}", shell_single_quote(&alloc_with_keepalive));
+
+    let session_expr = if let Some(name) = session_name {
+        shell_single_quote(name)
+    } else {
+        "\"sa_preempt_$(date +%Y%m%d_%H%M%S)_$$\"".to_string()
+    };
+    let script = format!(
+        "set -euo pipefail; \
+         command -v tmux >/dev/null 2>&1 || {{ echo 'tmux is required for --preempt' >&2; exit 127; }}; \
+         session={session_expr}; \
+         tmux new-session -d -s \"$session\" {tmux_payload}; \
+         echo \"preempt_session=$session\"; \
+         echo \"attach=tmux attach -t $session\"; \
+         echo \"hint=use slurm-client jobs --connection <connection_id> to find job id, then release/cancel when done\""
+    );
+    format!("bash -lc {}", shell_single_quote(&script))
+}
+
 fn build_srun_command(
     command: &[String],
     partition: Option<&str>,
@@ -2389,6 +2431,17 @@ mod tests {
     fn build_salloc_command_omits_mem_and_time_when_not_set() {
         let command = build_salloc_command("gpu-a100", Some("gpu:1"), Some(12), None, None, None, None);
         assert_eq!(command, "salloc -p gpu-a100 --cpus-per-task=12 --gres=gpu:1");
+    }
+
+    #[test]
+    fn build_preempt_alloc_command_contains_tmux_and_keepalive() {
+        let wrapped = build_preempt_alloc_command(
+            "salloc -p gpu-a100 --cpus-per-task=12 --gres=gpu:1",
+            Some("preempt_a100"),
+        );
+        assert!(wrapped.contains("tmux new-session"));
+        assert!(wrapped.contains("sleep infinity"));
+        assert!(wrapped.contains("preempt_a100"));
     }
 
     #[test]
@@ -2558,6 +2611,39 @@ cpu48c-1|cpu48c|4/44/0/48|(null)|64000\n";
                 command: SessionSubcommand::Summary { .. },
             }) => {}
             _ => panic!("unexpected summary parse result"),
+        }
+    }
+
+    #[test]
+    fn parse_alloc_preempt_flags() {
+        let cli = Cli::try_parse_from([
+            "slurm-client",
+            "alloc",
+            "--connection",
+            "conn_gzu_cluster",
+            "-p",
+            "gpu-a100",
+            "-g",
+            "gpu:1",
+            "--preempt",
+            "--preempt-session",
+            "preempt_a100",
+            "--execute",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Alloc(AllocCommand {
+                preempt,
+                preempt_session,
+                execute,
+                ..
+            }) => {
+                assert!(preempt);
+                assert_eq!(preempt_session.as_deref(), Some("preempt_a100"));
+                assert!(execute);
+            }
+            _ => panic!("unexpected alloc parse result"),
         }
     }
 

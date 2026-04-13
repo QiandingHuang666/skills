@@ -157,7 +157,7 @@ slurm-client node-jobs <node> --connection <connection_id> [--json]
 ### alloc
 
 ```bash
-slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <cpus>] [--time <time>] [--mem <mem>] [--nodelist <node>] [--max-wait <minutes>] [--timeout-secs <seconds>] [--execute] [--json]
+slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <cpus>] [--time <time>] [--mem <mem>] [--nodelist <node>] [--max-wait <minutes>] [--preempt] [--preempt-session <name>] [--timeout-secs <seconds>] [--execute] [--json]
 ```
 
 说明：
@@ -168,6 +168,8 @@ slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <
 - 加 `--execute` 才会真正发起申请
 - 当用户明确“现在申请资源”时，应默认加 `--execute`，不要把 `salloc` 手工步骤转交给用户
 - `--execute` 模式下默认超时是 600 秒；排队较久时建议显式增大 `--timeout-secs`
+- 开启 `--preempt` 后，会自动在远端用 `tmux` 启动 `salloc ... bash -lc 'sleep infinity'` 保活，避免会话断开后资源立即释放
+- `--preempt-session` 可指定 tmux 会话名；不传时自动生成
 
 示例：
 
@@ -176,6 +178,8 @@ slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a10 -g gpu:1 -c 8 --execute --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a100-8card -g gpu:1 --execute --json
 slurm-client alloc --connection "$CONN_ID" -p gpu-a100 -g gpu:1 --execute --timeout-secs 1800 --json
+slurm-client alloc --connection "$CONN_ID" -p gpu-a100 -g gpu:1 --preempt --execute --json
+slurm-client alloc --connection "$CONN_ID" -p gpu-a100 -g gpu:1 --preempt --preempt-session preempt_a100 --execute --json
 ```
 
 ### release

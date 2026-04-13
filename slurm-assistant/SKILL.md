@@ -83,6 +83,8 @@ slurm-client run --connection <connection_id> <command>... --json
 - 用户明确要“现在申请/直接申请/申请这张卡”时，必须使用 `--execute`
 - 禁止只返回 `salloc` 规划命令后让用户手动执行
 - 只有在用户明确要求“先看命令不执行”时，才允许不加 `--execute`
+- 用户提到“抢占xx / 抢占显卡 / 抢占 A100”时，默认解释为：`alloc --preempt --execute`
+- `--preempt` 模式会自动使用 tmux 运行 `salloc` 并在分配后 `sleep infinity` 保活，避免会话断开导致资源被释放
 
 3. 文件传输
 ```bash
