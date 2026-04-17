@@ -32,6 +32,8 @@ slurm-client --help
 
 禁止把 Python CLI 当作默认入口。当前 skill 的主链路只应使用 Rust server/client。
 
+若直接执行 `slurm-client` 出现“找不到命令”，立刻改为显式路径重试（例如 `~/.local/bin/slurm-client`），不要继续盲跑后续命令。
+
 ### Step 1：先看本机 server
 
 每次会话开始先执行：
