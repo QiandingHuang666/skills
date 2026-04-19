@@ -11,7 +11,14 @@ $repoName = "skills"
 $defaultInstallDir = Join-Path $HOME "AppData\Local\Programs\slurm-assistant\bin"
 $installDir = if ($env:SLURM_ASSISTANT_INSTALL_DIR) { $env:SLURM_ASSISTANT_INSTALL_DIR } else { $defaultInstallDir }
 $baseUrl = if ($env:SLURM_ASSISTANT_BASE_URL) { $env:SLURM_ASSISTANT_BASE_URL } else { "https://github.com/$repoOwner/$repoName/releases/latest/download" }
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$scriptPath = $MyInvocation.MyCommand.Path
+if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+    # Script invoked via iex from remote content has no physical path.
+    $scriptDir = (Get-Location).Path
+}
+else {
+    $scriptDir = Split-Path -Parent $scriptPath
+}
 $packageDir = Join-Path $scriptDir "package"
 
 function Get-PlatformSuffix {
