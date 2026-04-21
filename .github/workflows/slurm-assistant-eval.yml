@@ -1,6 +1,11 @@
 name: slurm-assistant-eval
 
 on:
+  push:
+    paths:
+      - "slurm-assistant/evals/**"
+      - "slurm-assistant/rust/scripts/live_smoke_gzu.sh"
+      - ".github/workflows/slurm-assistant-eval.yml"
   workflow_dispatch:
 
 jobs:
@@ -33,18 +38,31 @@ jobs:
           bash slurm-assistant/evals/run_eval.sh trace --trace "${tmp_trace}" >/dev/null
 
   live-cluster:
-    if: ${{ secrets.GZU_SSH_KEY != '' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - name: Gate by secret
+        id: gate
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.GZU_SSH_KEY }}" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.gate.outputs.enabled == 'true'
+        uses: Swatinem/rust-cache@v2
       - name: Setup SSH key
+        if: steps.gate.outputs.enabled == 'true'
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.GZU_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
       - name: Run live smoke
+        if: steps.gate.outputs.enabled == 'true'
         env:
           SLURM_ASSISTANT_GZU_HOST: 210.40.56.85
           SLURM_ASSISTANT_GZU_PORT: 21563
