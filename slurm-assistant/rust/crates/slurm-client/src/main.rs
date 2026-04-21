@@ -505,7 +505,7 @@ fn main() -> Result<()> {
             })?;
             if cmd.execute && requested_gpu > 0 {
                 ensure_alloc_immediately_feasible(
-                    &status
+                    status
                         .as_ref()
                         .map(|s| s.data.available_nodes.as_slice())
                         .unwrap_or(&[]),
@@ -1085,10 +1085,10 @@ fn read_runtime_file(path: &Path) -> Result<RuntimeFile> {
 
 fn runtime_for_request() -> Result<RuntimeFile> {
     let path = runtime_file_path()?;
-    if let Ok(runtime) = read_runtime_file(&path) {
-        if fetch_server_status(&runtime).is_ok() {
-            return Ok(runtime);
-        }
+    if let Ok(runtime) = read_runtime_file(&path)
+        && fetch_server_status(&runtime).is_ok()
+    {
+        return Ok(runtime);
     }
     let _ = ensure_server_running_with_lock()?;
     read_runtime_file(&path)
@@ -1177,10 +1177,10 @@ fn fetch_server_status(runtime: &RuntimeFile) -> Result<SuccessResponse<ServerSt
 fn ensure_server_running() -> Result<SuccessResponse<ServerStatusData>> {
     let runtime_path = runtime_file_path()?;
 
-    if let Ok(runtime) = read_runtime_file(&runtime_path) {
-        if let Ok(payload) = fetch_server_status(&runtime) {
-            return Ok(payload);
-        }
+    if let Ok(runtime) = read_runtime_file(&runtime_path)
+        && let Ok(payload) = fetch_server_status(&runtime)
+    {
+        return Ok(payload);
     }
 
     start_server_background()?;
@@ -2017,9 +2017,7 @@ fn parse_gpu_gres_local(gres: &str) -> (u32, Option<String>) {
 }
 
 fn parse_requested_gpu_count(gres: Option<&str>) -> Option<u32> {
-    let Some(raw) = gres else {
-        return None;
-    };
+    let raw = gres?;
     let lower = raw.to_ascii_lowercase();
     if let Some(captures) = regex::Regex::new(r"gpu:[a-zA-Z_]\w*:(\d+)")
         .ok()
