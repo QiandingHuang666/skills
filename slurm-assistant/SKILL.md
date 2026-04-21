@@ -87,6 +87,9 @@ slurm-client run --connection <connection_id> <command>... --json
 - 只有在用户明确要求“先看命令不执行”时，才允许不加 `--execute`
 - 用户提到“抢占xx / 抢占显卡 / 抢占 A100”时，默认解释为：`alloc --preempt --execute`
 - `--preempt` 模式会自动使用 tmux 运行 `salloc` 并在分配后 `sleep infinity` 保活，避免会话断开导致资源被释放
+- `alloc --execute` 成功后，client 会自动把分配到的节点登记为 `resource_node` 连接（`jump_host` 指向当前集群连接）；`--preempt` 场景同样适用
+- `alloc --execute` 之前必须先检查“当前是否可满足申请”（GPU/CPU/节点约束）；若不满足，直接报告，不进入排队等待
+- 等待必须有限：执行模式下必须带 `--wait`（未显式传入时使用默认有限等待）
 
 3. 文件传输
 ```bash

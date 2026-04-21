@@ -27,6 +27,7 @@ const CAP_EXEC: &str = "exec";
 const CAP_FILES: &str = "files";
 const CAP_SESSIONS: &str = "sessions";
 const CAP_SLURM: &str = "slurm";
+const DEFAULT_ALLOC_MAX_WAIT_MINUTES: u32 = 5;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -42,6 +43,13 @@ struct Cli {
 struct AllocPlanOutput {
     command: String,
     execute: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoRegisterOutcome {
+    Added,
+    Pending,
+    Skipped,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -470,16 +478,23 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Alloc(cmd) => {
             let runtime = runtime_for_capability(CAP_SLURM)?;
-            let requested_gpu = parse_requested_gpu_count(cmd.gres.as_deref()).unwrap_or(1);
-            let auto_cpus = if cmd.cpus.is_none() {
-                let status = status_gpu_query(
+            let connection_id = cmd.connection_id.clone();
+            let requested_gpu = parse_requested_gpu_count(cmd.gres.as_deref()).unwrap_or(0);
+            let status = if requested_gpu > 0 {
+                Some(status_gpu_query(
                     &runtime,
                     &SlurmStatusGpuRequest {
-                        connection_id: cmd.connection_id.clone(),
+                        connection_id: connection_id.clone(),
                         partition: Some(cmd.partition.clone()),
                     },
-                )?;
-                recommend_alloc_cpus(&status.data.available_nodes, requested_gpu)
+                )?)
+            } else {
+                None
+            };
+            let auto_cpus = if cmd.cpus.is_none() {
+                status
+                    .as_ref()
+                    .and_then(|s| recommend_alloc_cpus(&s.data.available_nodes, requested_gpu))
             } else {
                 None
             };
@@ -488,6 +503,22 @@ fn main() -> Result<()> {
                     "failed to determine cpus automatically; please specify --cpus explicitly"
                 )
             })?;
+            if cmd.execute && requested_gpu > 0 {
+                ensure_alloc_immediately_feasible(
+                    &status
+                        .as_ref()
+                        .map(|s| s.data.available_nodes.as_slice())
+                        .unwrap_or(&[]),
+                    requested_gpu,
+                    cpus,
+                    cmd.nodelist.as_deref(),
+                )?;
+            }
+            let effective_max_wait = if cmd.execute {
+                Some(cmd.max_wait.unwrap_or(DEFAULT_ALLOC_MAX_WAIT_MINUTES))
+            } else {
+                cmd.max_wait
+            };
             let alloc_command = build_salloc_command(
                 &cmd.partition,
                 cmd.gres.as_deref(),
@@ -495,22 +526,31 @@ fn main() -> Result<()> {
                 cmd.time.as_deref(),
                 cmd.mem.as_deref(),
                 cmd.nodelist.as_deref(),
-                cmd.max_wait,
+                effective_max_wait,
             );
-            let final_command = if cmd.preempt {
-                build_preempt_alloc_command(&alloc_command, cmd.preempt_session.as_deref())
-            } else {
-                alloc_command
-            };
             if cmd.execute {
+                let alloc_job_name = make_alloc_job_name();
+                let alloc_with_job_name = with_alloc_job_name(&alloc_command, &alloc_job_name);
+                let tracked_alloc_command = if cmd.preempt {
+                    build_preempt_alloc_command(&alloc_with_job_name, cmd.preempt_session.as_deref())
+                } else {
+                    alloc_with_job_name
+                };
                 let payload = exec_run(
                     &runtime,
                     &ExecRunRequest {
-                        connection_id: cmd.connection_id,
-                        command: final_command,
+                        connection_id: connection_id.clone(),
+                        command: tracked_alloc_command,
                         timeout_secs: cmd.timeout_secs,
                     },
                 )?;
+                let register_outcome = auto_register_alloc_resource_node(
+                    &runtime,
+                    &connection_id,
+                    &cmd.partition,
+                    &alloc_job_name,
+                    &payload.data,
+                );
                 if cmd.json {
                     println!("{}", serde_json::to_string_pretty(&payload)?);
                 } else {
@@ -521,22 +561,43 @@ fn main() -> Result<()> {
                         eprint!("{}", payload.data.stderr);
                     }
                     eprintln!("exit_code: {}", payload.data.exit_code);
+                    match register_outcome {
+                        Ok(AutoRegisterOutcome::Added) => {
+                            eprintln!("resource_node: auto-registered from allocation");
+                        }
+                        Ok(AutoRegisterOutcome::Pending) => {
+                            eprintln!(
+                                "resource_node: allocation queued or node unresolved yet; retry `slurm-client jobs --connection {connection_id} --json` later and rerun alloc if needed"
+                            );
+                        }
+                        Ok(AutoRegisterOutcome::Skipped) => {}
+                        Err(err) => {
+                            eprintln!("warning: failed to auto-register resource node: {err}");
+                        }
+                    }
                 }
-            } else if cmd.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&AllocPlanOutput {
-                        command: final_command,
-                        execute: false,
-                    })?
-                );
             } else {
-                if cmd.preempt {
-                    println!("Preempt allocation launcher command");
+                let final_command = if cmd.preempt {
+                    build_preempt_alloc_command(&alloc_command, cmd.preempt_session.as_deref())
                 } else {
-                    println!("Interactive allocation command");
+                    alloc_command
+                };
+                if cmd.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&AllocPlanOutput {
+                            command: final_command,
+                            execute: false,
+                        })?
+                    );
+                } else {
+                    if cmd.preempt {
+                        println!("Preempt allocation launcher command");
+                    } else {
+                        println!("Interactive allocation command");
+                    }
+                    println!("  {}", final_command);
                 }
-                println!("  {}", final_command);
             }
         }
         Command::Cancel(cmd) => {
@@ -2278,6 +2339,129 @@ fn build_preempt_alloc_command(alloc_command: &str, session_name: Option<&str>) 
     format!("bash -lc {}", shell_single_quote(&script))
 }
 
+fn make_alloc_job_name() -> String {
+    let secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("sa_alloc_{secs}_{}", std::process::id())
+}
+
+fn nodelist_matches(nodelist: Option<&str>, node: &str) -> bool {
+    let Some(raw) = nodelist else {
+        return true;
+    };
+    raw.split(',')
+        .map(|v| v.trim())
+        .any(|candidate| !candidate.is_empty() && candidate == node)
+}
+
+fn ensure_alloc_immediately_feasible(
+    nodes: &[SlurmGpuNode],
+    requested_gpu: u32,
+    requested_cpus: u32,
+    nodelist: Option<&str>,
+) -> Result<()> {
+    let mut considered = 0usize;
+    for node in nodes {
+        if !nodelist_matches(nodelist, &node.node) {
+            continue;
+        }
+        considered += 1;
+        if node.gpu_idle >= requested_gpu && node.cpu_idle >= requested_cpus {
+            return Ok(());
+        }
+    }
+
+    if considered == 0 {
+        if let Some(required_node) = nodelist {
+            bail!(
+                "requested node `{required_node}` is not currently available in this partition"
+            );
+        }
+        bail!("no candidate nodes available in this partition right now");
+    }
+    bail!(
+        "requested resources are not currently available: need gpu>={requested_gpu}, cpu>={requested_cpus}; consider reducing request or retry later"
+    );
+}
+
+fn with_alloc_job_name(command: &str, job_name: &str) -> String {
+    format!("{command} --job-name={job_name}")
+}
+
+fn extract_node_from_alloc_output(stdout: &str, stderr: &str) -> Option<String> {
+    let merged = format!("{stdout}\n{stderr}");
+    let pattern = regex::Regex::new(r"Nodes?\s+([A-Za-z0-9_.-]+)\s+are\s+ready\s+for\s+job").ok()?;
+    let captures = pattern.captures(&merged)?;
+    captures.get(1).map(|m| m.as_str().to_string())
+}
+
+fn find_allocated_node_by_job_name(
+    runtime: &RuntimeFile,
+    connection_id: &str,
+    partition: &str,
+    job_name: &str,
+) -> Result<Option<String>> {
+    for _ in 0..60 {
+        let jobs = jobs_query(
+            runtime,
+            &SlurmJobsRequest {
+                connection_id: connection_id.to_string(),
+                job_id: None,
+            },
+        )?;
+        if let Some(job) = jobs.data.jobs.into_iter().find(|job| {
+            job.name == job_name
+                && job.partition.eq_ignore_ascii_case(partition)
+                && job.state.eq_ignore_ascii_case("running")
+                && !job.reason.starts_with('(')
+                && !job.reason.trim().is_empty()
+        }) {
+            return Ok(Some(job.reason));
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    Ok(None)
+}
+
+fn auto_register_alloc_resource_node(
+    runtime: &RuntimeFile,
+    connection_id: &str,
+    partition: &str,
+    alloc_job_name: &str,
+    exec_data: &ExecRunData,
+) -> Result<AutoRegisterOutcome> {
+    if exec_data.exit_code != 0 {
+        return Ok(AutoRegisterOutcome::Skipped);
+    }
+    let base_connection = get_connection(runtime, connection_id)?.data;
+    let username = match base_connection.username {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => return Ok(AutoRegisterOutcome::Skipped),
+    };
+    let node = extract_node_from_alloc_output(&exec_data.stdout, &exec_data.stderr).or(
+        find_allocated_node_by_job_name(runtime, connection_id, partition, alloc_job_name)?,
+    );
+    let Some(node) = node else {
+        return Ok(AutoRegisterOutcome::Pending);
+    };
+
+    let _ = add_connection(
+        runtime,
+        &ConnectionAddRequest {
+            label: node.clone(),
+            host: Some(node),
+            port: Some(22),
+            username: Some(username),
+            kind: ConnectionKind::ResourceNode,
+            jump_host: Some(connection_id.to_string()),
+            default_keepalive_secs: None,
+        },
+    )?;
+    Ok(AutoRegisterOutcome::Added)
+}
+
 fn build_srun_command(
     command: &[String],
     partition: Option<&str>,
@@ -2442,6 +2626,50 @@ mod tests {
         assert!(wrapped.contains("tmux new-session"));
         assert!(wrapped.contains("sleep infinity"));
         assert!(wrapped.contains("preempt_a100"));
+    }
+
+    #[test]
+    fn with_alloc_job_name_appends_flag() {
+        let command = with_alloc_job_name("salloc -p gpu-a100 --gres=gpu:1", "sa_alloc_123");
+        assert!(command.contains("--job-name=sa_alloc_123"));
+    }
+
+    #[test]
+    fn extract_node_from_alloc_output_parses_ready_line() {
+        let node = extract_node_from_alloc_output(
+            "",
+            "salloc: Nodes gpu-a100-8card-1 are ready for job 63501\n",
+        );
+        assert_eq!(node.as_deref(), Some("gpu-a100-8card-1"));
+    }
+
+    #[test]
+    fn ensure_alloc_immediately_feasible_accepts_matching_node() {
+        let nodes = vec![SlurmGpuNode {
+            node: "gpu-a100-1".to_string(),
+            partition: "gpu-a100".to_string(),
+            gpu_idle: 2,
+            gpu_total: 8,
+            gpu_type: "A100".to_string(),
+            cpu_idle: 32,
+            cpu_total: 128,
+        }];
+        ensure_alloc_immediately_feasible(&nodes, 1, 8, None).unwrap();
+    }
+
+    #[test]
+    fn ensure_alloc_immediately_feasible_rejects_insufficient_capacity() {
+        let nodes = vec![SlurmGpuNode {
+            node: "gpu-a100-1".to_string(),
+            partition: "gpu-a100".to_string(),
+            gpu_idle: 0,
+            gpu_total: 8,
+            gpu_type: "A100".to_string(),
+            cpu_idle: 4,
+            cpu_total: 128,
+        }];
+        let err = ensure_alloc_immediately_feasible(&nodes, 1, 8, None).unwrap_err();
+        assert!(err.to_string().contains("not currently available"));
     }
 
     #[test]
