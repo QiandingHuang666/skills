@@ -15,11 +15,11 @@ use serde::Serialize;
 use slurm_proto::{
     ConnectionAddRequest, ConnectionDeleteData, ConnectionKind, ConnectionListData,
     ConnectionRecord, ExecRunData, ExecRunRequest, FileDownloadRequest, FileTransferData,
-    FileUploadRequest, RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest,
-    SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode, SlurmJobsData, SlurmJobsRequest,
-    SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
-    SlurmSubmitRequest, SuccessResponse, SessionDeleteData, SessionListData, SessionNodeRole,
-    SessionRecord, SessionState, SessionSummaryData, SessionUpsertRequest,
+    FileUploadRequest, RuntimeFile, ServerStatusData, SessionDeleteData, SessionListData,
+    SessionNodeRole, SessionRecord, SessionState, SessionSummaryData, SessionUpsertRequest,
+    SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData, SlurmFindGpuRequest, SlurmGpuNode,
+    SlurmJobsData, SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData,
+    SlurmStatusGpuRequest, SlurmSubmitData, SlurmSubmitRequest, SuccessResponse,
 };
 
 const CAP_CONNECTIONS: &str = "connections";
@@ -532,7 +532,10 @@ fn main() -> Result<()> {
                 let alloc_job_name = make_alloc_job_name();
                 let alloc_with_job_name = with_alloc_job_name(&alloc_command, &alloc_job_name);
                 let tracked_alloc_command = if cmd.preempt {
-                    build_preempt_alloc_command(&alloc_with_job_name, cmd.preempt_session.as_deref())
+                    build_preempt_alloc_command(
+                        &alloc_with_job_name,
+                        cmd.preempt_session.as_deref(),
+                    )
                 } else {
                     alloc_with_job_name
                 };
@@ -1249,7 +1252,11 @@ fn stop_server_process(pid: u32) -> Result<()> {
     #[cfg(windows)]
     if !status.success() {
         let mut fallback = ProcessCommand::new("taskkill");
-        fallback.arg("/PID").arg(pid.to_string()).arg("/T").arg("/F");
+        fallback
+            .arg("/PID")
+            .arg(pid.to_string())
+            .arg("/T")
+            .arg("/F");
         let _ = fallback.status();
     }
 
@@ -2044,7 +2051,10 @@ fn recommend_alloc_cpus(nodes: &[SlurmGpuNode], requested_gpu: u32) -> Option<u3
         let per_gpu = (node.cpu_total / node.gpu_total).max(1);
         let target = per_gpu.saturating_mul(requested_gpu);
         let candidate = node.cpu_idle.min(target).max(1);
-        best = Some(best.map(|current| current.max(candidate)).unwrap_or(candidate));
+        best = Some(
+            best.map(|current| current.max(candidate))
+                .unwrap_or(candidate),
+        );
     }
     best
 }
@@ -2375,9 +2385,7 @@ fn ensure_alloc_immediately_feasible(
 
     if considered == 0 {
         if let Some(required_node) = nodelist {
-            bail!(
-                "requested node `{required_node}` is not currently available in this partition"
-            );
+            bail!("requested node `{required_node}` is not currently available in this partition");
         }
         bail!("no candidate nodes available in this partition right now");
     }
@@ -2392,7 +2400,8 @@ fn with_alloc_job_name(command: &str, job_name: &str) -> String {
 
 fn extract_node_from_alloc_output(stdout: &str, stderr: &str) -> Option<String> {
     let merged = format!("{stdout}\n{stderr}");
-    let pattern = regex::Regex::new(r"Nodes?\s+([A-Za-z0-9_.-]+)\s+are\s+ready\s+for\s+job").ok()?;
+    let pattern =
+        regex::Regex::new(r"Nodes?\s+([A-Za-z0-9_.-]+)\s+are\s+ready\s+for\s+job").ok()?;
     let captures = pattern.captures(&merged)?;
     captures.get(1).map(|m| m.as_str().to_string())
 }
@@ -2613,8 +2622,12 @@ mod tests {
 
     #[test]
     fn build_salloc_command_omits_mem_and_time_when_not_set() {
-        let command = build_salloc_command("gpu-a100", Some("gpu:1"), Some(12), None, None, None, None);
-        assert_eq!(command, "salloc -p gpu-a100 --cpus-per-task=12 --gres=gpu:1");
+        let command =
+            build_salloc_command("gpu-a100", Some("gpu:1"), Some(12), None, None, None, None);
+        assert_eq!(
+            command,
+            "salloc -p gpu-a100 --cpus-per-task=12 --gres=gpu:1"
+        );
     }
 
     #[test]

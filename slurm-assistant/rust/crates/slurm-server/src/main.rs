@@ -22,12 +22,12 @@ use slurm_proto::{
     ConnectionAddData, ConnectionAddRequest, ConnectionDeleteData, ConnectionKind,
     ConnectionListData, ConnectionRecord, ErrorBody, ErrorCode, ErrorResponse, ExecRunData,
     ExecRunRequest, FileDownloadRequest, FileTransferData, FileUploadRequest, PingData,
-    RuntimeFile, ServerStatusData, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
-    SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData,
-    SlurmJobsRequest, SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest,
-    SlurmSubmitData, SlurmSubmitRequest, SuccessResponse, SessionConnectionSummary,
-    SessionDeleteData, SessionListData, SessionNodeRole, SessionRecord, SessionState,
-    SessionSummaryData, SessionUpsertData, SessionUpsertRequest,
+    RuntimeFile, ServerStatusData, SessionConnectionSummary, SessionDeleteData, SessionListData,
+    SessionNodeRole, SessionRecord, SessionState, SessionSummaryData, SessionUpsertData,
+    SessionUpsertRequest, SlurmCancelData, SlurmCancelRequest, SlurmFindGpuData,
+    SlurmFindGpuRequest, SlurmGpuNode, SlurmGpuSummary, SlurmJob, SlurmJobsData, SlurmJobsRequest,
+    SlurmLogData, SlurmLogRequest, SlurmStatusGpuData, SlurmStatusGpuRequest, SlurmSubmitData,
+    SlurmSubmitRequest, SuccessResponse,
 };
 use wait_timeout::ChildExt;
 
@@ -187,7 +187,10 @@ fn app_router(state: ServerState) -> Router {
         .route("/v1/sessions/list", get(handle_sessions_list))
         .route("/v1/sessions/summary", get(handle_sessions_summary))
         .route("/v1/sessions/upsert", post(handle_sessions_upsert))
-        .route("/v1/sessions/{id}", get(handle_sessions_get).delete(handle_sessions_delete))
+        .route(
+            "/v1/sessions/{id}",
+            get(handle_sessions_get).delete(handle_sessions_delete),
+        )
         .route("/v1/exec/run", post(handle_exec_run))
         .route("/v1/slurm/status_gpu", post(handle_slurm_status_gpu))
         .route("/v1/slurm/find_gpu", post(handle_slurm_find_gpu))
@@ -618,7 +621,12 @@ fn open_db(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-fn ensure_column_exists(conn: &Connection, table: &str, column: &str, sql_type: &str) -> Result<()> {
+fn ensure_column_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    sql_type: &str,
+) -> Result<()> {
     let mut stmt = conn
         .prepare(&format!("PRAGMA table_info({table})"))
         .with_context(|| format!("failed to inspect table {table}"))?;
@@ -644,14 +652,10 @@ fn add_connection_to_db(path: &Path, request: &ConnectionAddRequest) -> Result<C
     let keepalive = normalize_keepalive_secs(request.default_keepalive_secs);
     if matches!(request.kind, ConnectionKind::ResourceNode) {
         if request.host.as_deref().unwrap_or("").is_empty() {
-            return Err(anyhow::anyhow!(
-                "resource_node connection requires --host"
-            ));
+            return Err(anyhow::anyhow!("resource_node connection requires --host"));
         }
         if request.username.as_deref().unwrap_or("").is_empty() {
-            return Err(anyhow::anyhow!(
-                "resource_node connection requires --user"
-            ));
+            return Err(anyhow::anyhow!("resource_node connection requires --user"));
         }
         if request.jump_host.as_deref().unwrap_or("").is_empty() {
             return Err(anyhow::anyhow!(
@@ -1503,7 +1507,10 @@ fn local_username() -> Option<String> {
         .or_else(|| env::var("USERNAME").ok().filter(|value| !value.is_empty()))
 }
 
-fn query_scontrol_gpu_nodes(path: &Path, connection: &ConnectionRecord) -> Result<Vec<ParsedGpuNode>> {
+fn query_scontrol_gpu_nodes(
+    path: &Path,
+    connection: &ConnectionRecord,
+) -> Result<Vec<ParsedGpuNode>> {
     let (program, args) = build_exec_program(path, connection, "scontrol show node")?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
@@ -1526,12 +1533,12 @@ fn resolve_jump_host_value(db_path: &Path, raw_jump_host: &str) -> Result<String
     }
 
     if let Ok(conn) = get_connection_from_db(db_path, trimmed) {
-        let host = conn.host.ok_or_else(|| {
-            anyhow::anyhow!("jump host connection `{trimmed}` missing host")
-        })?;
-        let user = conn.username.ok_or_else(|| {
-            anyhow::anyhow!("jump host connection `{trimmed}` missing username")
-        })?;
+        let host = conn
+            .host
+            .ok_or_else(|| anyhow::anyhow!("jump host connection `{trimmed}` missing host"))?;
+        let user = conn
+            .username
+            .ok_or_else(|| anyhow::anyhow!("jump host connection `{trimmed}` missing username"))?;
         if let Some(port) = conn.port {
             return Ok(format!("{user}@{host}:{port}"));
         }
@@ -2370,10 +2377,7 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
             last_health_checked_at: None,
         };
         let (_program, args) = build_exec_program(&db_path, &node_conn, "hostname").unwrap();
-        assert!(
-            args.iter()
-                .any(|arg| arg == "qiandingh@210.40.56.85:21563")
-        );
+        assert!(args.iter().any(|arg| arg == "qiandingh@210.40.56.85:21563"));
     }
 
     #[test]
