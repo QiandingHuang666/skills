@@ -1060,7 +1060,7 @@ fn check_resource_node_state(
 
 fn execute_command(path: &Path, request: &ExecRunRequest) -> Result<ExecRunData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
-    let (program, args) = build_exec_program(&connection, &request.command)?;
+    let (program, args) = build_exec_program(path, &connection, &request.command)?;
     run_process(program, &args, request.timeout_secs)
 }
 
@@ -1078,7 +1078,7 @@ fn query_slurm_jobs(path: &Path, request: &SlurmJobsRequest) -> Result<SlurmJobs
         format!("squeue -u {username} -h -o '%i|%P|%j|%u|%T|%M|%D|%R'")
     };
 
-    let (program, args) = build_exec_program(&connection, &command)?;
+    let (program, args) = build_exec_program(path, &connection, &command)?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
         return Err(anyhow::anyhow!(
@@ -1098,7 +1098,7 @@ fn query_slurm_status_gpu(
     request: &SlurmStatusGpuRequest,
 ) -> Result<SlurmStatusGpuData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
-    let nodes = query_scontrol_gpu_nodes(&connection)?;
+    let nodes = query_scontrol_gpu_nodes(path, &connection)?;
 
     let matches_partition = |node: &ParsedGpuNode| {
         request
@@ -1127,7 +1127,7 @@ fn query_slurm_status_gpu(
 
 fn query_slurm_find_gpu(path: &Path, request: &SlurmFindGpuRequest) -> Result<SlurmFindGpuData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
-    let nodes = query_scontrol_gpu_nodes(&connection)?;
+    let nodes = query_scontrol_gpu_nodes(path, &connection)?;
 
     let matches_gpu_type = |node: &ParsedGpuNode| {
         request
@@ -1164,7 +1164,7 @@ fn query_slurm_find_gpu(path: &Path, request: &SlurmFindGpuRequest) -> Result<Sl
 fn query_slurm_log(path: &Path, request: &SlurmLogRequest) -> Result<SlurmLogData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     let command = build_slurm_log_command(&request.job_id)?;
-    let (program, args) = build_exec_program(&connection, &command)?;
+    let (program, args) = build_exec_program(path, &connection, &command)?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
         return Err(anyhow::anyhow!(
@@ -1186,7 +1186,7 @@ fn query_slurm_log(path: &Path, request: &SlurmLogRequest) -> Result<SlurmLogDat
 fn query_slurm_cancel(path: &Path, request: &SlurmCancelRequest) -> Result<SlurmCancelData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     let command = build_scancel_command(&request.job_ids)?;
-    let (program, args) = build_exec_program(&connection, &command)?;
+    let (program, args) = build_exec_program(path, &connection, &command)?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
         return Err(anyhow::anyhow!(
@@ -1203,7 +1203,7 @@ fn query_slurm_cancel(path: &Path, request: &SlurmCancelRequest) -> Result<Slurm
 fn query_slurm_submit(path: &Path, request: &SlurmSubmitRequest) -> Result<SlurmSubmitData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     let command = build_sbatch_command(&request.script_path)?;
-    let (program, args) = build_exec_program(&connection, &command)?;
+    let (program, args) = build_exec_program(path, &connection, &command)?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
         return Err(anyhow::anyhow!(
@@ -1220,6 +1220,7 @@ fn query_slurm_submit(path: &Path, request: &SlurmSubmitRequest) -> Result<Slurm
 fn handle_upload(path: &Path, request: &FileUploadRequest) -> Result<FileTransferData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     transfer_path(
+        path,
         &connection,
         &request.local_path,
         &request.remote_path,
@@ -1236,6 +1237,7 @@ fn handle_upload(path: &Path, request: &FileUploadRequest) -> Result<FileTransfe
 fn handle_download(path: &Path, request: &FileDownloadRequest) -> Result<FileTransferData> {
     let connection = get_connection_from_db(path, &request.connection_id)?;
     transfer_path(
+        path,
         &connection,
         &request.remote_path,
         &request.local_path,
@@ -1250,6 +1252,7 @@ fn handle_download(path: &Path, request: &FileDownloadRequest) -> Result<FileTra
 }
 
 fn build_exec_program(
+    db_path: &Path,
     connection: &ConnectionRecord,
     command: &str,
 ) -> Result<(String, Vec<String>)> {
@@ -1289,7 +1292,7 @@ fn build_exec_program(
             }
             if let Some(jump_host) = &connection.jump_host {
                 args.push("-J".to_string());
-                args.push(jump_host.clone());
+                args.push(resolve_jump_host_value(db_path, jump_host)?);
             }
             args.push(format!("{username}@{host}"));
             args.push(command.to_string());
@@ -1362,6 +1365,7 @@ fn parse_submitted_job_id(raw_output: &str) -> Result<String> {
 }
 
 fn transfer_path(
+    db_path: &Path,
     connection: &ConnectionRecord,
     src: &str,
     dst: &str,
@@ -1374,7 +1378,8 @@ fn transfer_path(
         | ConnectionKind::Instance
         | ConnectionKind::Server
         | ConnectionKind::ResourceNode => {
-            let (program, args) = build_scp_program(connection, src, dst, recursive, download)?;
+            let (program, args) =
+                build_scp_program(db_path, connection, src, dst, recursive, download)?;
             let output = run_process(program, &args, 300)?;
             if output.exit_code != 0 {
                 return Err(anyhow::anyhow!(
@@ -1389,6 +1394,7 @@ fn transfer_path(
 }
 
 fn build_scp_program(
+    db_path: &Path,
     connection: &ConnectionRecord,
     src: &str,
     dst: &str,
@@ -1414,7 +1420,7 @@ fn build_scp_program(
     }
     if let Some(jump_host) = &connection.jump_host {
         args.push("-J".to_string());
-        args.push(jump_host.clone());
+        args.push(resolve_jump_host_value(db_path, jump_host)?);
     }
     if recursive {
         args.push("-r".to_string());
@@ -1497,8 +1503,8 @@ fn local_username() -> Option<String> {
         .or_else(|| env::var("USERNAME").ok().filter(|value| !value.is_empty()))
 }
 
-fn query_scontrol_gpu_nodes(connection: &ConnectionRecord) -> Result<Vec<ParsedGpuNode>> {
-    let (program, args) = build_exec_program(connection, "scontrol show node")?;
+fn query_scontrol_gpu_nodes(path: &Path, connection: &ConnectionRecord) -> Result<Vec<ParsedGpuNode>> {
+    let (program, args) = build_exec_program(path, connection, "scontrol show node")?;
     let output = run_process(program, &args, 30)?;
     if output.exit_code != 0 {
         return Err(anyhow::anyhow!(
@@ -1508,6 +1514,31 @@ fn query_scontrol_gpu_nodes(connection: &ConnectionRecord) -> Result<Vec<ParsedG
         ));
     }
     parse_scontrol_gpu_nodes_output(&output.stdout)
+}
+
+fn resolve_jump_host_value(db_path: &Path, raw_jump_host: &str) -> Result<String> {
+    let trimmed = raw_jump_host.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("jump host must not be empty"));
+    }
+    if trimmed.contains('@') || trimmed.contains(':') {
+        return Ok(trimmed.to_string());
+    }
+
+    if let Ok(conn) = get_connection_from_db(db_path, trimmed) {
+        let host = conn.host.ok_or_else(|| {
+            anyhow::anyhow!("jump host connection `{trimmed}` missing host")
+        })?;
+        let user = conn.username.ok_or_else(|| {
+            anyhow::anyhow!("jump host connection `{trimmed}` missing username")
+        })?;
+        if let Some(port) = conn.port {
+            return Ok(format!("{user}@{host}:{port}"));
+        }
+        return Ok(format!("{user}@{host}"));
+    }
+
+    Ok(trimmed.to_string())
 }
 
 fn matches_token(haystack: &str, needle: &str) -> bool {
@@ -2076,7 +2107,8 @@ mod tests {
             health_message: None,
             last_health_checked_at: None,
         };
-        let (program, args) = build_exec_program(&connection, "hostname").unwrap();
+        let (program, args) =
+            build_exec_program(Path::new("state.db"), &connection, "hostname").unwrap();
         assert_eq!(program, "ssh");
         assert!(args.iter().any(|arg| arg == "qiandingh@210.40.56.85"));
         assert!(args.iter().any(|arg| arg == "21563"));
@@ -2249,20 +2281,98 @@ NodeName=gpu-a40-9 Arch=x86_64\n\
             health_message: None,
             last_health_checked_at: None,
         };
-        let (program, args) =
-            build_scp_program(&connection, "/tmp/train.py", "~/train.py", false, false).unwrap();
+        let (program, args) = build_scp_program(
+            Path::new("state.db"),
+            &connection,
+            "/tmp/train.py",
+            "~/train.py",
+            false,
+            false,
+        )
+        .unwrap();
         assert_eq!(program, "scp");
         assert_eq!(
             args.last().map(String::as_str),
             Some("qiandingh@210.40.56.85:~/train.py")
         );
 
-        let (_, download_args) =
-            build_scp_program(&connection, "~/slurm.out", "/tmp/slurm.out", false, true).unwrap();
+        let (_, download_args) = build_scp_program(
+            Path::new("state.db"),
+            &connection,
+            "~/slurm.out",
+            "/tmp/slurm.out",
+            false,
+            true,
+        )
+        .unwrap();
         assert!(
             download_args
                 .iter()
                 .any(|value| value == "qiandingh@210.40.56.85:~/slurm.out")
+        );
+    }
+
+    #[test]
+    fn resolve_jump_host_connection_id_to_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+
+        add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-hpc".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Instance,
+                jump_host: None,
+                default_keepalive_secs: None,
+            },
+        )
+        .unwrap();
+
+        let resolved = resolve_jump_host_value(&db_path, "conn_gzu_hpc").unwrap();
+        assert_eq!(resolved, "qiandingh@210.40.56.85:21563");
+    }
+
+    #[test]
+    fn build_exec_program_resolves_jump_host_connection_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("state.db");
+        init_db(&db_path).unwrap();
+
+        add_connection_to_db(
+            &db_path,
+            &ConnectionAddRequest {
+                label: "gzu-hpc".to_string(),
+                host: Some("210.40.56.85".to_string()),
+                port: Some(21563),
+                username: Some("qiandingh".to_string()),
+                kind: ConnectionKind::Instance,
+                jump_host: None,
+                default_keepalive_secs: None,
+            },
+        )
+        .unwrap();
+
+        let node_conn = ConnectionRecord {
+            id: "conn_gpu_a100_8card_1".to_string(),
+            label: "gpu-a100-8card-1".to_string(),
+            host: Some("gpu-a100-8card-1".to_string()),
+            port: Some(22),
+            username: Some("qiandingh".to_string()),
+            kind: ConnectionKind::ResourceNode,
+            jump_host: Some("conn_gzu_hpc".to_string()),
+            default_keepalive_secs: None,
+            health_state: None,
+            health_message: None,
+            last_health_checked_at: None,
+        };
+        let (_program, args) = build_exec_program(&db_path, &node_conn, "hostname").unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg == "qiandingh@210.40.56.85:21563")
         );
     }
 
