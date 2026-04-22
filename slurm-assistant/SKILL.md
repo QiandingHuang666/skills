@@ -61,6 +61,12 @@ slurm-client session summary --json
 - 多个连接：按用户意图选 `cluster`、`instance` 或 `local`
 - 若存在 `resource-node` 连接，先查看其 `health_state`，优先复用 `online` 状态连接
 
+强制规则（必须遵循）：
+
+- 只要用户提到“贵州大学 / 贵大 / GZU”，必须先读取 `references/use_gzu.md`
+- 未读取 `references/use_gzu.md` 前，禁止执行实例路径相关的安装、数据读写、软链接命令
+- 路径不得猜测，必须按 `references/use_gzu.md` 的映射表确定
+
 ### Step 3：按 6 类任务执行
 
 1. 资源查看
@@ -184,6 +190,18 @@ slurm-client connection add \
 slurm-client exec --connection <connection_id> --cmd 'hostname' --json
 ```
 
+若用户场景包含“贵州大学实例”，还必须先做：
+
+1. 读取 `references/use_gzu.md`
+2. 判定实例类型：`容器实例(SSH)` 或 `虚拟机实例(WebDAV)`
+3. 明确当前会话可用路径映射（个人目录 / 项目目录 / 公共集群目录）
+4. 在执行安装、数据操作前，先向用户说明“本次将使用的实际路径”
+
+禁止行为：
+
+- 把 `218xx` 端口场景直接按公共集群路径处理
+- 未判定实例类型就直接使用 `/home/share/Official` 或 `/groups/...` 路径
+
 ---
 
 ## 贵州大学 HPC 特例
@@ -194,6 +212,12 @@ slurm-client exec --connection <connection_id> --cmd 'hostname' --json
 - Port：`21563`
 
 在贵州大学集群上，下载数据集或安装软件前，优先检查公共资源目录，详见 `references/gzu_public_resources.md`。
+
+额外强制规则：
+
+- 只要用户提到“贵州大学”，必须先读 `references/use_gzu.md`，再决定命令
+- 涉及“实例”时，优先执行“路径映射确认”，再执行任何环境配置命令
+- 输出中必须显式给出映射后的关键路径，避免用户误用目录
 
 ---
 

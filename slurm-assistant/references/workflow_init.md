@@ -34,6 +34,13 @@ slurm-client server status --json
 - Host：`210.40.56.85`
 - Port：`21563`
 
+若用户消息包含“贵州大学 / 贵大 / GZU”，必须先进入贵州大学专属分支：
+
+1. 先读取 `references/use_gzu.md`
+2. 若涉及“实例”，先判定实例类型：容器实例(SSH) / 虚拟机实例(WebDAV)
+3. 先确认路径映射（个人目录 / 项目目录 / 公共集群目录）
+4. 完成映射确认前，禁止执行安装、软链接、数据目录写操作
+
 ---
 
 ## 3. 添加连接
@@ -75,6 +82,11 @@ slurm-client connection add \
   --json
 ```
 
+若是贵州大学实例，在 `connection add` 之后仍需先做一次路径映射确认，再执行后续命令：
+
+- 容器实例：按 `use_gzu.md` 使用 `/home/<username>` 与 `/groups/public_cluster/...`
+- 虚拟机实例：按 `use_gzu.md` 使用 `/webdav/...`
+
 ### 集群本地模式
 
 ```bash
@@ -107,6 +119,11 @@ slurm-client exec --connection <connection_id> --cmd 'hostname' --json
 - 检查是否需要跳板机
 
 免密登录配置可参考 `references/set_free_password.md`。
+
+贵州大学实例补充：
+
+- 连接验证通过后，先执行“路径映射验证”命令，再进行环境配置或数据操作
+- 输出里必须明确写出本次使用的映射路径，不能只给通用命令
 
 ---
 

@@ -10,6 +10,15 @@
 slurm-client server ensure --json
 ```
 
+若用户提到“贵州大学 / 贵大 / GZU”，在继续前必须读取：
+
+- `references/use_gzu.md`
+
+并先完成两件事：
+
+- 判定当前是公共集群还是实例（容器实例/虚拟机实例）
+- 确认路径映射后再执行安装、数据操作
+
 ---
 
 ## 2. 连接分流
@@ -32,6 +41,11 @@ slurm-client connection list --json
 - `0` 个连接：去 `workflow_init.md`
 - `1` 个连接：直接使用这个 `connection_id`
 - 多个连接：按用户意图选 `cluster`、`instance` 或 `local`
+
+贵州大学补充规则：
+
+- 用户提到“实例”时，不允许跳过路径映射确认
+- 未确认映射前，不执行 `exec` 安装命令或数据目录写操作
 
 ---
 

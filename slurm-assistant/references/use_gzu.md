@@ -85,6 +85,55 @@ slurm-client connection add \
 
 ---
 
+## 路径映射验证（标准命令模板）
+
+涉及贵州大学“实例”时，连接验证通过后先执行路径映射验证，再做安装/软链接/数据写操作。
+
+### A. 容器实例（SSH）
+
+先验证个人目录和公共集群映射目录：
+
+```bash
+slurm-client exec --connection <connection_id> --cmd 'whoami; ls -ld /home/<username> /groups/public_cluster/home/<username>' --json
+```
+
+再验证公共工具路径（如需安装 conda/uv）：
+
+```bash
+slurm-client exec --connection <connection_id> --cmd 'ls -ld /groups/public_cluster/home/share/Official /groups/public_cluster/home/share/Official/tools' --json
+```
+
+### B. 虚拟机实例（WebDAV）
+
+先验证 WebDAV 根目录：
+
+```bash
+slurm-client exec --connection <connection_id> --cmd 'ls -ld /webdav /webdav/MyData "/webdav/ProjectGroup(public_cluster)"' --json
+```
+
+如果上面的引号路径在当前 shell 不兼容，可改为：
+
+```bash
+slurm-client exec --connection <connection_id> --cmd "ls -ld /webdav /webdav/MyData /webdav/ProjectGroup\\(public_cluster\\)" --json
+```
+
+### C. 公共集群（21563）
+
+验证公共集群个人目录：
+
+```bash
+slurm-client exec --connection <connection_id> --cmd 'whoami; ls -ld /home/<username> /users/<username>' --json
+```
+
+---
+
+## 输出要求（必须遵循）
+
+- 输出中必须明确写出本次确认后的“个人目录 / 公共目录 / 项目目录”实际路径
+- 若路径不存在或权限不足，先报告并停止后续重操作，不能继续猜测路径
+
+---
+
 ## 相关文档
 
 - 公共资源检查: `gzu_public_resources.md`
