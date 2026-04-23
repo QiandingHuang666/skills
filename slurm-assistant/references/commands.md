@@ -167,6 +167,7 @@ slurm-client alloc --connection <connection_id> -p <partition> [-g <gres>] [-c <
 - 默认输出的是建议执行的 `salloc` 命令
 - 加 `--execute` 才会真正发起申请
 - 当用户明确“现在申请资源”时，应默认加 `--execute`，不要把 `salloc` 手工步骤转交给用户
+- 默认不传 `--mem` 和 `--time`；仅当用户明确指定时再添加
 - `--execute` 模式下默认超时是 600 秒；排队较久时建议显式增大 `--timeout-secs`
 - 开启 `--preempt` 后，会自动在远端用 `tmux` 启动 `salloc ... bash -lc 'sleep infinity'` 保活，避免会话断开后资源立即释放
 - `--preempt-session` 可指定 tmux 会话名；不传时自动生成
@@ -193,6 +194,10 @@ slurm-client release <job_id> --connection <connection_id> [--json]
 ```bash
 slurm-client run --connection <connection_id> [-p <partition>] [-g <gres>] [-c <cpus>] [--time <time>] [--mem <mem>] [--nodelist <node>] <command>... [--json]
 ```
+
+说明：
+
+- 与 `alloc` 一致：默认不传 `--mem` 和 `--time`；仅用户明确指定时添加
 
 示例：
 

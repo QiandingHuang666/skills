@@ -27,6 +27,11 @@
 }
 ```
 
+约束：
+
+- `mem` 与 `time` 不是默认必填项
+- 只有用户明确提出时，才在脚本中添加 `#SBATCH --mem=...` 或 `#SBATCH --time=...`
+
 ---
 
 ## 第二步：询问虚拟环境配置（必须）
@@ -83,7 +88,6 @@
 #SBATCH --partition=gpu-a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=4:00:00
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 
@@ -114,7 +118,6 @@ echo "Job completed at: $(date)"
 #SBATCH --partition=gpu-a100
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --time=4:00:00
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
 

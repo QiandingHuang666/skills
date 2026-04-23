@@ -96,6 +96,7 @@ slurm-client run --connection <connection_id> <command>... --json
 - `alloc --execute` 成功后，client 会自动把分配到的节点登记为 `resource_node` 连接（`jump_host` 指向当前集群连接）；`--preempt` 场景同样适用
 - `alloc --execute` 之前必须先检查“当前是否可满足申请”（GPU/CPU/节点约束）；若不满足，直接报告，不进入排队等待
 - 等待必须有限：执行模式下必须带 `--wait`（未显式传入时使用默认有限等待）
+- 默认不指定 `--mem` 和 `--time`；只有用户明确提出内存或时长要求时才添加
 
 3. 文件传输
 ```bash
