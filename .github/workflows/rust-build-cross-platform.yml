@@ -37,8 +37,8 @@ jobs:
             runner: ubuntu-latest
             artifact_name: slurm-assistant-linux-amd64
             file_suffix: linux-amd64
-            rust_target: x86_64-unknown-linux-gnu
-            target_dir: target/x86_64-unknown-linux-gnu/release
+            rust_target: x86_64-unknown-linux-musl
+            target_dir: target/x86_64-unknown-linux-musl/release
             bin_ext: ""
           - label: macos-amd64
             runner: macos-latest
@@ -72,6 +72,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - name: Install musl toolchain (Linux only)
+        if: ${{ matrix.rust_target == 'x86_64-unknown-linux-musl' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
 
       - uses: Swatinem/rust-cache@v2
 
